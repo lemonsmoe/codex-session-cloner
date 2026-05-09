@@ -826,17 +826,23 @@ class LegacyStateFileTests(unittest.TestCase):
 
 class ScratchpadTargetTests(unittest.TestCase):
     def test_scratchpad_skipped_on_windows(self) -> None:
+        # Patching ``os.name`` to "nt" on a POSIX runner trips
+        # ``NotImplementedError: cannot instantiate 'WindowsPath'``
+        # because ``pathlib.Path(...)`` reads os.name to dispatch
+        # the concrete class. Test the inspector directly instead of
+        # going through ``build_plan`` (which constructs Paths).
         from unittest.mock import patch
+        from ai_cli_kit.claude.services import _inspect_purge_scratchpad, build_targets
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             home = Path(tmp_dir)
             paths = default_paths(home)
             paths.claude_dir.mkdir(parents=True)
+            target = next(t for t in build_targets(paths) if t.key == "scratchpad_tmp_dir")
             with patch("ai_cli_kit.claude.services.os.name", "nt"):
-                plan = build_plan(paths, {"scratchpad_tmp_dir"})
-                item = next(p for p in plan if p.target.key == "scratchpad_tmp_dir")
-                self.assertFalse(item.applicable)
-                self.assertIn("Windows", item.details)
+                item = _inspect_purge_scratchpad(target, set())
+            self.assertFalse(item.applicable)
+            self.assertIn("Windows", item.details)
 
     def test_scratchpad_skipped_when_dir_absent(self) -> None:
         if os.name == "nt":
@@ -1605,32 +1611,31 @@ class SettingsEnvSoftFailTests(unittest.TestCase):
 
 class WindowsReservedSanitizeTests(unittest.TestCase):
     def test_sanitize_renames_reserved_basenames_on_windows(self) -> None:
+        # ``Path("...")`` reads ``os.name`` at construction. Building
+        # the test inputs OUTSIDE the mock keeps them PosixPath on a
+        # Linux runner; the function under test reuses the input class
+        # via ``type(relative)(*parts)`` so the mock only flips the
+        # function's internal os.name check, not pathlib's dispatch.
         from ai_cli_kit.claude.services import _sanitize_windows_reserved
         from unittest.mock import patch
 
+        case_with_dir = Path("projects/CON/foo.json")
+        expected_with_dir = Path("projects/CON_reserved/foo.json")
+        case_with_ext = Path("projects/com1.bak")
+        expected_with_ext = Path("projects/com1.bak_reserved")
+        case_regular = Path("projects/regular.json")
         with patch("ai_cli_kit.claude.services.os.name", "nt"):
-            self.assertEqual(
-                _sanitize_windows_reserved(Path("projects/CON/foo.json")),
-                Path("projects/CON_reserved/foo.json"),
-            )
-            self.assertEqual(
-                _sanitize_windows_reserved(Path("projects/com1.bak")),
-                Path("projects/com1.bak_reserved"),
-            )
-            self.assertEqual(
-                _sanitize_windows_reserved(Path("projects/regular.json")),
-                Path("projects/regular.json"),
-            )
+            self.assertEqual(_sanitize_windows_reserved(case_with_dir), expected_with_dir)
+            self.assertEqual(_sanitize_windows_reserved(case_with_ext), expected_with_ext)
+            self.assertEqual(_sanitize_windows_reserved(case_regular), case_regular)
 
     def test_sanitize_noop_on_posix(self) -> None:
         from ai_cli_kit.claude.services import _sanitize_windows_reserved
         from unittest.mock import patch
 
+        case = Path("projects/CON/foo.json")
         with patch("ai_cli_kit.claude.services.os.name", "posix"):
-            self.assertEqual(
-                _sanitize_windows_reserved(Path("projects/CON/foo.json")),
-                Path("projects/CON/foo.json"),
-            )
+            self.assertEqual(_sanitize_windows_reserved(case), case)
 
 
 class CliRestoreEmptyExitCodeTests(unittest.TestCase):

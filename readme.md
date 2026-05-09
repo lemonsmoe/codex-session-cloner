@@ -11,7 +11,9 @@
 
 ![界面预览](./assets/12345.png)
 
-![CC Clean TUI](./assets/cc-clean-tui.png)
+| `aik` 顶层 hub | CC Clean 子工具 |
+|---|---|
+| ![aik hub](./assets/aik-hub.png) | ![CC Clean TUI](./assets/cc-clean-tui.png) |
 
 ## 选哪种运行方式？
 

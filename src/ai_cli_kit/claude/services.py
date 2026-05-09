@@ -3180,7 +3180,13 @@ def _sanitize_windows_reserved(relative: Path) -> Path:
             changed = True
     if not changed:
         return relative
-    return Path(*parts)
+    # ``Path(*parts)`` reads ``os.name`` AT CONSTRUCTION to dispatch
+    # PosixPath vs WindowsPath. Tests that patch ``services.os.name``
+    # to "nt" on a POSIX runner trip ``NotImplementedError: cannot
+    # instantiate 'WindowsPath' on your system``. Reuse the input's
+    # concrete class so mocking the os.name reference here doesn't
+    # leak into pathlib's class-selection logic.
+    return type(relative)(*parts)
 
 
 _BACKUP_DESTINATION_SUFFIX_CAP = 10_000
