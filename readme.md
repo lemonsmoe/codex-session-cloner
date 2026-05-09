@@ -11,6 +11,8 @@
 
 ![界面预览](./assets/12345.png)
 
+![CC Clean TUI](./assets/cc-clean-tui.png)
+
 ## 选哪种运行方式？
 
 | 方式 | 命令 | 需要安装吗？ | 会在 PATH 里多命令吗？ |
