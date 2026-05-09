@@ -649,9 +649,22 @@ def _run_debug_paths(paths, output_format: str) -> int:
     where the legacy single-anchor mental model breaks down.
     """
     from .paths import CLAUDE_CONFIG_DIR_ENV
-    from .services import _AUTO_MEMORY_ENV_VAR, resolve_auto_memory_override
+    from .services import _AUTO_MEMORY_ENV_VAR, resolve_auto_memory_override_state
 
-    auto_mem = resolve_auto_memory_override(paths)
+    # R9 L1: use the tri-state resolver so debug output can distinguish
+    # "unset" from "set-but-rejected by validator". Earlier path used
+    # the binary wrapper which collapsed both into None.
+    auto_mem_state = resolve_auto_memory_override_state(paths)
+    auto_mem = auto_mem_state.valid_path
+    auto_mem_status = (
+        {"state": "valid", "path": str(auto_mem_state.valid_path)}
+        if auto_mem_state.valid_path is not None
+        else (
+            {"state": "rejected", "raw": auto_mem_state.rejected_raw, "source": auto_mem_state.rejected_source}
+            if auto_mem_state.rejected_raw
+            else {"state": "unset"}
+        )
+    )
     payload = {
         "command": "debug-paths",
         "status": "ok",
@@ -736,6 +749,7 @@ def _run_debug_paths(paths, output_format: str) -> int:
             "CLAUDE_CODE_USE_COWORK_PLUGINS": os.environ.get("CLAUDE_CODE_USE_COWORK_PLUGINS") or None,
         },
         "resolved_auto_memory_override": str(auto_mem) if auto_mem else None,
+        "auto_memory_override_state": auto_mem_status,
     }
     if output_format == "json":
         print(json.dumps(payload, ensure_ascii=False, indent=2))
@@ -755,7 +769,16 @@ def _run_debug_paths(paths, output_format: str) -> int:
         print("  %-22s %s" % (key, value if value is not None else "<unset>"))
     print("")
     print("[auto-memory override]")
-    print("  %s" % (payload["resolved_auto_memory_override"] or "<未配置；使用默认 projects_dir>"))
+    state = payload["auto_memory_override_state"]
+    if state["state"] == "valid":
+        print("  valid → %s" % state["path"])
+    elif state["state"] == "rejected":
+        print(
+            "  rejected (来源 %s，原值 %r) — cc 走默认位置；请修正后重试。"
+            % (state["source"], state["raw"])
+        )
+    else:
+        print("  <未配置；使用默认 projects_dir>")
     return 0
 
 

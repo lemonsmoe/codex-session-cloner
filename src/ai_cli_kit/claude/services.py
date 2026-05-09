@@ -1090,8 +1090,13 @@ def build_targets(paths: ClaudePaths) -> Tuple[CleanupTarget, ...]:
         *_build_remote_memory_redirect_targets(paths),
         CleanupTarget(
             key="scratchpad_tmp_dir",
-            label="清理 /tmp/claude-{uid}/* scratchpad 目录",
-            description="POSIX 平台 cc 在 /tmp/claude-<uid>/ 写每会话 scratchpad；正常退出会清，崩溃后残留。Windows 不适用。",
+            label="清理 ${TMPDIR}/claude scratchpad 目录",
+            description=(
+                "cc 在每会话 scratchpad 目录里暂存工具/prompt 副本。POSIX: "
+                "${CLAUDE_CODE_TMPDIR or /tmp}/claude-<uid>/。Windows: "
+                "${CLAUDE_CODE_TMPDIR or %TEMP%}/claude/。R8 起跨平台。"
+                "正常退出会清，崩溃后残留。"
+            ),
             action="purge_scratchpad",
             target_path="posix-scratchpad",
             default_selected=False,
@@ -1414,7 +1419,16 @@ def _restore_from_backup_locked(
     # before trusting it.
     meta = _read_backup_metadata(backup_root)
     anchors: List[Path] = [paths.home]
-    trusted_anchor_strs = {os.path.normcase(str(paths.home)), os.path.normcase(str(paths.config_root))}
+    # R9 M2: trust XDG parents too so backups taken with
+    # ``XDG_DATA_HOME=/srv/share`` can restore. Symmetric with
+    # ``_relative_under_anchors`` extension above.
+    trusted_anchor_strs = {
+        os.path.normcase(str(paths.home)),
+        os.path.normcase(str(paths.config_root)),
+        os.path.normcase(str(paths.xdg_data_claude.parent)),
+        os.path.normcase(str(paths.xdg_cache_claude.parent)),
+        os.path.normcase(str(paths.xdg_state_claude.parent)),
+    }
     if meta is not None:
         meta_config_root = meta.get("config_root")
         if isinstance(meta_config_root, str) and meta_config_root:
@@ -3286,16 +3300,26 @@ def _backup_file_copy(paths: ClaudePaths, backup_root: Path, source: Path) -> Pa
 def _relative_under_anchors(paths: ClaudePaths, source: Path) -> Path:
     """Strip a known anchor from ``source`` for the backup mirror tree.
 
-    Tries each anchor in priority order: ``home`` first (so the common
-    case is the legacy single-anchor layout we always shipped), then
-    ``config_root`` if it differs (covers ``CLAUDE_CONFIG_DIR=/srv/x``
-    where cc data is outside ``$HOME``). Files unreachable from either
-    anchor land under ``external/<cleaned>`` so they round-trip
-    losslessly through backup→restore even with weird mount layouts.
+    Anchor priority: ``home``, ``config_root`` (when differs), then any
+    XDG redirect set via env (data / cache / state) when those parent
+    dirs sit outside ``home``. Without the XDG entries, env-redirected
+    XDG_DATA_HOME=/srv/share fell through to ``external/...`` and
+    couldn't round-trip through restore (R9 M2).
     """
     anchors: List[Path] = [paths.home]
     if paths.config_root != paths.home:
         anchors.append(paths.config_root)
+    # R9 M2: include XDG parent dirs when they fall outside home so
+    # ``XDG_DATA_HOME=/srv/share`` round-trips. We anchor on the
+    # PARENT of the cc subdir (e.g. ``/srv/share`` not
+    # ``/srv/share/claude``) so the relative path keeps the ``claude/``
+    # segment for symmetry with the un-redirected layout.
+    for xdg in (paths.xdg_data_claude.parent, paths.xdg_cache_claude.parent, paths.xdg_state_claude.parent):
+        try:
+            xdg.relative_to(paths.home)
+        except ValueError:
+            if xdg not in anchors:
+                anchors.append(xdg)
     return _relative_under_home(*anchors, source=source)
 
 

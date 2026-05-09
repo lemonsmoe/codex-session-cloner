@@ -2233,5 +2233,52 @@ class R8Pass1RegressionTests(unittest.TestCase):
             self.assertEqual(second, 1)
 
 
+class R9XdgRestoreRoundTripTests(unittest.TestCase):
+    """R9 M2: backup files written to XDG redirect paths (outside
+    $HOME) must round-trip through restore. Before the fix, those
+    files landed under ``external/`` in the backup tree and restore
+    skipped them with "请手动还原"."""
+
+    def test_xdg_data_home_path_is_in_backup_anchor_set(self) -> None:
+        from ai_cli_kit.claude.paths import resolve_default_paths
+        from ai_cli_kit.claude.services import _relative_under_anchors
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            home = Path(tmp_dir) / "home"
+            home.mkdir()
+            paths = resolve_default_paths(
+                home,
+                env={"XDG_DATA_HOME": str(Path(tmp_dir) / "srv" / "share")},
+            )
+            # File under XDG redirect — should NOT land in external/
+            source = paths.xdg_data_claude / "versions" / "1.0" / "claude"
+            relative = _relative_under_anchors(paths, source)
+            self.assertFalse(
+                str(relative).startswith("external"),
+                "XDG redirect path %s landed in external/ — restore can't round-trip" % source,
+            )
+
+
+class R9DebugPathsTriStateTests(unittest.TestCase):
+    """R9 L1: debug-paths now distinguishes auto-memory unset / valid /
+    rejected via ``auto_memory_override_state``."""
+
+    def test_debug_paths_emits_tri_state_field(self) -> None:
+        import contextlib
+        import io as _io
+        from ai_cli_kit.claude.cli import main
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            home = Path(tmp_dir)
+            buf = _io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = main(["--home", str(home), "debug-paths", "--format", "json"])
+            self.assertEqual(rc, 0)
+            payload = json.loads(buf.getvalue())
+            self.assertIn("auto_memory_override_state", payload)
+            self.assertIn(payload["auto_memory_override_state"]["state"],
+                          {"unset", "valid", "rejected"})
+
+
 if __name__ == "__main__":
     unittest.main()

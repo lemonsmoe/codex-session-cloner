@@ -101,20 +101,26 @@ python -m ai_cli_kit.claude
 
 兼容写法：`./aik claude` 等价于 `./cc-clean`。
 
-**清理覆盖范围（40+ targets）**：
+**清理覆盖范围（60+ targets，跨 7 类）**：
 
 ```
 身份/凭据：state_user_id, state_full_identity, legacy_state_file, credentials_file,
-            macos_keychain (含 16 服务名变体), settings_auth_env
+            macos_keychain (含 16 服务名变体 + locked 检测), settings_auth_env
 PII / 缓存：telemetry, statsig, paste-cache, dump-prompts, traces, file-history,
             image-cache, stats-cache, startup-perf, usage-data, uploads (bridge)
-状态/索引：plugins, debug, ide, teams, session-env, agent-memory, mcp-needs-auth-cache,
-            policy-limits, remote-settings, computer-use.lock, output-styles, completion.*
-旧备份：   ~/.claude/backups/.claude*.json.{backup,corrupted}.* + 旧版 HOME 直下兼容
-危险（默认不勾）：projects, history, sessions, user_claude_md, plans, jobs, tasks
-环境重定向（动态）：CLAUDE_CONFIG_DIR / CLAUDE_COWORK_MEMORY_PATH_OVERRIDE /
-                  CLAUDE_CODE_PLUGIN_CACHE_DIR / CLAUDE_CODE_REMOTE_MEMORY_DIR
-                  / CLAUDE_CODE_TMPDIR
+状态/锁：   plugins, debug, ide, teams, session-env, agent-memory,
+            mcp-needs-auth-cache, mcp-refresh-*.lock (per-server),
+            computer-use.lock, policy-limits, remote-settings,
+            output-styles, completion.{bash,zsh,fish}, workflows
+旧备份：   ~/.claude/backups/.claude*.json.{backup,corrupted}.* + 旧 HOME 直下
+危险（默认不勾）：projects, history, sessions, user_claude_md, plans, jobs, tasks,
+            agents, skills, rules, keybindings, magic-docs, chrome
+XDG 出 ~/.claude/：xdg_data_claude / xdg_cache_claude / xdg_state_claude
+            （native installer 写到 $XDG_DATA_HOME/claude 等）
+环境重定向：CLAUDE_CONFIG_DIR / CLAUDE_COWORK_MEMORY_PATH_OVERRIDE /
+            CLAUDE_CODE_PLUGIN_CACHE_DIR / CLAUDE_CODE_REMOTE_MEMORY_DIR /
+            CLAUDE_CODE_TMPDIR / XDG_DATA_HOME / XDG_CACHE_HOME / XDG_STATE_HOME
+scratchpad: ${TMPDIR}/claude (Windows) / ${TMPDIR}/claude-<uid> (POSIX)
 跨 OS：    Windows 长路径 + 保留名 sanitize / NTFS junction 守卫 /
           macOS NFC 路径 / POSIX 0o700 备份目录权限
 ```
