@@ -167,31 +167,36 @@ def import_session(
         existing_index = load_existing_index(paths.index_file)
         prepared_bytes = prepared_source_session.read_bytes()
         effective_updated_at = updated_at
-        if target_session.exists():
-            existing_bytes = target_session.read_bytes()
-            existing_updated_at = normalize_updated_at("", target_session, extract_last_timestamp(target_session))
-            existing_epoch = iso_to_epoch(existing_updated_at)
-            imported_epoch = iso_to_epoch(updated_at)
+        # Serialize the rollout-file read-check-write: two concurrent imports of
+        # the *same session-id from different bundles* would otherwise race —
+        # the second observes target_session.exists()==False at check time, so
+        # it takes no .bak backup and clobbers the first's result.
+        with file_lock(lock_path_for(target_session)):
+            if target_session.exists():
+                existing_bytes = target_session.read_bytes()
+                existing_updated_at = normalize_updated_at("", target_session, extract_last_timestamp(target_session))
+                existing_epoch = iso_to_epoch(existing_updated_at)
+                imported_epoch = iso_to_epoch(updated_at)
 
-            if existing_bytes == prepared_bytes:
-                rollout_action = "unchanged"
-                effective_updated_at = existing_updated_at or updated_at
-            elif existing_epoch and existing_epoch >= imported_epoch:
-                rollout_action = "preserved_newer_local"
-                effective_updated_at = existing_updated_at
-                warnings.append(
-                    "Warning: local session is newer than imported bundle; preserved local rollout and merged history only."
-                )
+                if existing_bytes == prepared_bytes:
+                    rollout_action = "unchanged"
+                    effective_updated_at = existing_updated_at or updated_at
+                elif existing_epoch and existing_epoch >= imported_epoch:
+                    rollout_action = "preserved_newer_local"
+                    effective_updated_at = existing_updated_at
+                    warnings.append(
+                        "Warning: local session is newer than imported bundle; preserved local rollout and merged history only."
+                    )
+                else:
+                    # ns granularity prevents two imports in the same second from
+                    # overwriting each other's backup file.
+                    backup_path = target_session.with_name(target_session.name + f".bak.{time.time_ns()}")
+                    safe_copy2(target_session, backup_path)
+                    _atomic_copy(prepared_source_session, target_session)
+                    rollout_action = "overwritten"
             else:
-                # ns granularity prevents two imports in the same second from
-                # overwriting each other's backup file.
-                backup_path = target_session.with_name(target_session.name + f".bak.{time.time_ns()}")
-                safe_copy2(target_session, backup_path)
                 _atomic_copy(prepared_source_session, target_session)
-                rollout_action = "overwritten"
-        else:
-            _atomic_copy(prepared_source_session, target_session)
-            rollout_action = "created"
+                rollout_action = "created"
 
         effective_session_file = target_session
         effective_fields = extract_session_meta_fields(effective_session_file, "cwd", "source", "originator")
