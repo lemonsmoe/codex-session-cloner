@@ -204,7 +204,17 @@ def prune_old_backups(backup_parent: Path, *, keep_last: int = 20) -> list[Path]
     children = [c for c in backup_parent.iterdir() if c.is_dir()]
     if len(children) <= keep_last:
         return []
-    children.sort(key=lambda p: p.stat().st_mtime)
+
+    def _mtime(p: Path) -> float:
+        # A concurrently-removed backup dir must not crash the caller's primary
+        # operation (cleanup is best-effort) — treat it as oldest so it sorts
+        # to the delete end and rmtree(ignore_errors=True) no-ops on it.
+        try:
+            return p.stat().st_mtime
+        except OSError:
+            return 0.0
+
+    children.sort(key=_mtime)
     removed: list[Path] = []
     for old in children[:-keep_last]:
         try:
