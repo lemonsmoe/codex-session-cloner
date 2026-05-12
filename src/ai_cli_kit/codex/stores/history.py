@@ -45,7 +45,7 @@ def collect_history_lines_for_session(history_file: Path, session_id: str) -> Li
                 obj = json.loads(stripped)
             except json.JSONDecodeError:
                 continue
-            if obj.get("session_id") == session_id:
+            if isinstance(obj, dict) and obj.get("session_id") == session_id:
                 lines.append(raw if raw.endswith("\n") else raw + "\n")
     return lines
 
@@ -58,6 +58,8 @@ def first_history_text(history_lines: Sequence[str]) -> str:
         try:
             obj = json.loads(stripped)
         except Exception:
+            continue
+        if not isinstance(obj, dict):
             continue
         text = obj.get("text")
         if isinstance(text, str):

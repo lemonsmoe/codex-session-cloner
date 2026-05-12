@@ -238,6 +238,8 @@ def read_session_payload(path: Path) -> dict:
                     obj = json.loads(stripped)
                 except json.JSONDecodeError as exc:
                     raise ToolkitError(f"{path} line {line_number}: {exc}") from exc
+                if not isinstance(obj, dict):
+                    continue
                 if obj.get("type") != "session_meta":
                     continue
                 payload = obj.get("payload")
@@ -267,6 +269,8 @@ def extract_session_meta_fields(session_file: Path, *field_names: str) -> dict:
                     obj = json.loads(stripped)
                 except json.JSONDecodeError:
                     continue
+                if not isinstance(obj, dict):
+                    continue
                 if obj.get("type") != "session_meta":
                     continue
                 payload = obj.get("payload")
@@ -292,6 +296,8 @@ def extract_last_timestamp(session_file: Path) -> str:
                 try:
                     obj = json.loads(stripped)
                 except json.JSONDecodeError:
+                    continue
+                if not isinstance(obj, dict):
                     continue
                 timestamp = obj.get("timestamp")
                 if isinstance(timestamp, str) and timestamp:
@@ -382,6 +388,8 @@ def collect_session_ids_for_kind(
                     if not stripped:
                         continue
                     obj = json.loads(stripped)
+                    if not isinstance(obj, dict):
+                        continue
                     if obj.get("type") != "session_meta":
                         continue
                     payload = obj.get("payload")

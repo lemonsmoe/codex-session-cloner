@@ -6,6 +6,7 @@ import json
 import os
 import sqlite3
 from collections import OrderedDict
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -278,7 +279,7 @@ def repair_desktop(
         # long_path() prefixes \\?\ on Windows when the path exceeds MAX_PATH
         # (260 chars); sqlite3 ultimately uses CreateFileW which honours that
         # prefix. No-op on POSIX where it just returns the original string.
-        with sqlite3.connect(long_path(state_db), timeout=30) as conn:
+        with closing(sqlite3.connect(long_path(state_db), timeout=30)) as conn, conn:
             cur = conn.cursor()
             row = cur.execute("select name from sqlite_master where type='table' and name='threads'").fetchone()
             if row:

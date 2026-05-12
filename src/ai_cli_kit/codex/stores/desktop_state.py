@@ -6,6 +6,7 @@ import json
 import os
 import sqlite3
 import sys
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -194,7 +195,7 @@ def upsert_threads_table(
 
     # long_path() prefixes \\?\ on Windows so sqlite3 (CreateFileW under the
     # hood) can open paths > MAX_PATH. POSIX no-op.
-    with sqlite3.connect(long_path(state_db), timeout=30) as conn:
+    with closing(sqlite3.connect(long_path(state_db), timeout=30)) as conn, conn:
         cur = conn.cursor()
         row = cur.execute("select name from sqlite_master where type='table' and name='threads'").fetchone()
         if not row:
