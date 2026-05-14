@@ -15,6 +15,9 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
     tomllib = None
 
 
+OPENAI_OFFICIAL_PROVIDER = "cliproxyapi"
+
+
 def _nonempty_str(value: Any) -> str:
     return value.strip() if isinstance(value, str) else ""
 
@@ -68,8 +71,38 @@ def _provider_from_openai_official(paths: CodexPaths, data: dict[str, Any], text
     except (OSError, json.JSONDecodeError):
         auth_data = {}
     if isinstance(auth_data, dict) and _nonempty_str(auth_data.get("OPENAI_API_KEY")):
-        return "OpenAI"
+        return OPENAI_OFFICIAL_PROVIDER
     return ""
+
+
+def _provider_from_recent_sessions(paths: CodexPaths) -> str:
+    candidates: list[tuple[float, str]] = []
+    for root in (paths.sessions_dir, paths.archived_sessions_dir):
+        if not root.exists():
+            continue
+        for session_file in root.rglob("*.jsonl"):
+            try:
+                mtime = session_file.stat().st_mtime
+                with session_file.open("r", encoding="utf-8") as fh:
+                    first_line = fh.readline()
+                if not first_line.strip():
+                    continue
+                obj = json.loads(first_line)
+                if not isinstance(obj, dict):
+                    continue
+                payload = obj.get("payload")
+                if not isinstance(payload, dict):
+                    continue
+                provider = _nonempty_str(payload.get("model_provider"))
+                if provider:
+                    candidates.append((mtime, provider))
+            except (OSError, json.JSONDecodeError):
+                continue
+
+    if not candidates:
+        return ""
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return candidates[0][1]
 
 
 def detect_provider(paths: CodexPaths, explicit: str = "") -> str:
@@ -95,6 +128,10 @@ def detect_provider(paths: CodexPaths, explicit: str = "") -> str:
         return provider
 
     provider = _provider_from_openai_official(paths, data, text)
+    if provider:
+        return provider
+
+    provider = _provider_from_recent_sessions(paths)
     if provider:
         return provider
 

@@ -458,7 +458,35 @@ class ProviderDetectionTests(unittest.TestCase):
                 json.dumps({"OPENAI_API_KEY": "sk-test"}, separators=(",", ":")),
                 encoding="utf-8",
             )
-            self.assertEqual(detect_provider(CodexPaths(home=home)), "OpenAI")
+            self.assertEqual(detect_provider(CodexPaths(home=home)), "cliproxyapi")
+
+    def test_detect_provider_falls_back_to_latest_session_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            home = Path(tmpdir) / "home"
+            code_dir = home / ".codex"
+            code_dir.mkdir(parents=True, exist_ok=True)
+            (code_dir / "config.toml").write_text('model = "gpt-5.5"\n', encoding="utf-8")
+
+            older = write_session(
+                home,
+                "11111111-1111-1111-1111-111111111111",
+                provider="right_code",
+                source="vscode",
+                originator="Codex Desktop",
+                cwd=Path("/tmp/project-a"),
+            )
+            newer = write_session(
+                home,
+                "22222222-2222-2222-2222-222222222222",
+                provider="cliproxyapi",
+                source="vscode",
+                originator="Codex Desktop",
+                cwd=Path("/tmp/project-b"),
+            )
+            os.utime(older, (100, 100))
+            os.utime(newer, (200, 200))
+
+            self.assertEqual(detect_provider(CodexPaths(home=home)), "cliproxyapi")
 
     def test_detect_provider_errors_when_no_provider_signal_exists(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
