@@ -17,11 +17,13 @@ if str(SRC_DIR) not in sys.path:
 
 from ai_cli_kit.codex.paths import CodexPaths  # noqa: E402
 from ai_cli_kit.codex.models import BundleSummary  # noqa: E402
+from ai_cli_kit.codex.errors import ToolkitError  # noqa: E402
 from ai_cli_kit.codex.services.browse import get_bundle_summaries, get_session_summaries, validate_bundles  # noqa: E402
 from ai_cli_kit.codex.services.clone import clone_to_provider  # noqa: E402
 from ai_cli_kit.codex.services.dedupe import dedupe_clones  # noqa: E402
 from ai_cli_kit.codex.services.exporting import export_active_desktop_all, export_session  # noqa: E402
 from ai_cli_kit.codex.services.importing import import_desktop_all, import_session  # noqa: E402
+from ai_cli_kit.codex.services.provider import detect_provider  # noqa: E402
 from ai_cli_kit.codex.services.repair import repair_desktop  # noqa: E402
 from ai_cli_kit.codex.support import machine_label_to_key  # noqa: E402
 from ai_cli_kit.codex.stores.bundles import collect_known_bundle_summaries, latest_distinct_bundle_summaries  # noqa: E402
@@ -423,6 +425,49 @@ class IndexStoreHelperTests(unittest.TestCase):
             # Should not raise
             remove_session_index_entries(missing, {"sid-1"})
             self.assertFalse(missing.exists())
+
+
+class ProviderDetectionTests(unittest.TestCase):
+    def test_detect_provider_uses_explicit_model_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            home = Path(tmpdir) / "home"
+            write_config(home, "target-provider")
+            self.assertEqual(detect_provider(CodexPaths(home=home)), "target-provider")
+
+    def test_detect_provider_falls_back_to_single_declared_model_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            home = Path(tmpdir) / "home"
+            code_dir = home / ".codex"
+            code_dir.mkdir(parents=True, exist_ok=True)
+            (code_dir / "config.toml").write_text(
+                '[model_providers.only_one]\nname = "Only One"\nbase_url = "https://example.com/v1"\n',
+                encoding="utf-8",
+            )
+            self.assertEqual(detect_provider(CodexPaths(home=home)), "only_one")
+
+    def test_detect_provider_infers_openai_official_from_bundled_auth(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            home = Path(tmpdir) / "home"
+            code_dir = home / ".codex"
+            code_dir.mkdir(parents=True, exist_ok=True)
+            (code_dir / "config.toml").write_text(
+                '[marketplaces.openai-bundled]\nsource_type = "local"\nsource = "C:/tmp/openai-bundled"\n',
+                encoding="utf-8",
+            )
+            (code_dir / "auth.json").write_text(
+                json.dumps({"OPENAI_API_KEY": "sk-test"}, separators=(",", ":")),
+                encoding="utf-8",
+            )
+            self.assertEqual(detect_provider(CodexPaths(home=home)), "OpenAI")
+
+    def test_detect_provider_errors_when_no_provider_signal_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            home = Path(tmpdir) / "home"
+            code_dir = home / ".codex"
+            code_dir.mkdir(parents=True, exist_ok=True)
+            (code_dir / "config.toml").write_text('model = "gpt-5.5"\n', encoding="utf-8")
+            with self.assertRaises(ToolkitError):
+                detect_provider(CodexPaths(home=home))
 
 
 class CoreWorkflowTests(unittest.TestCase):
