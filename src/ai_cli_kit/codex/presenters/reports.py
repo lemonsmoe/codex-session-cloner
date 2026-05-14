@@ -85,6 +85,10 @@ def print_clone_run_result(result: CloneRunResult) -> int:
     print("\n==============================")
     print("Summary:")
     print(f"  Target Provider: {result.provider}")
+    if "lineages" in result.stats:
+        print(f"  Lineages Found:  {result.stats.get('lineages', 0)}")
+    if "candidates" in result.stats:
+        print(f"  Candidates:      {result.stats.get('candidates', 0)}")
     print(f"  Cloned (New):    {result.stats.get('cloned', 0)}")
     print(f"  Skipped (Target):{result.stats.get('skipped_target', 0)} (already on target provider)")
     print(f"  Skipped (Done):  {result.stats.get('skipped_exists', 0)} (already cloned earlier)")
@@ -117,12 +121,12 @@ def print_dedupe_result(result: DedupeResult) -> int:
     print(f"Target Provider: {result.provider}")
     print(f"Dry run: {'yes' if result.dry_run else 'no'}")
     print(f"Files scanned: {result.files_checked}")
-    print(f"Duplicate pairs found: {len(result.duplicate_pairs)}")
+    print(f"Duplicate lineage sessions found: {len(result.duplicate_pairs)}")
 
     for delete_path, keep_path, reason in result.duplicate_pairs[:30]:
         action_prefix = "[DRY-RUN] Would delete" if result.dry_run else "[Deleted]"
         print(f"{action_prefix} {delete_path}")
-        print(f"  keep: {keep_path}")
+        print(f"  keep latest representative: {keep_path}")
         print(f"  reason: {reason}")
 
     if len(result.duplicate_pairs) > 30:

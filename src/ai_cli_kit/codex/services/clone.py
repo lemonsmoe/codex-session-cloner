@@ -11,8 +11,10 @@ from typing import Optional
 from ..errors import ToolkitError
 from ..models import CleanupResult, CloneFileResult, CloneRunResult
 from ..paths import CodexPaths
+from ..services.dedupe import _representative_key, _root_of, _session_catalog
 from ..services.provider import detect_provider
-from ..support import atomic_write, backup_file, prune_old_backups
+from ..stores.index import load_existing_index, upsert_session_index
+from ..support import atomic_write, backup_file, normalize_iso, prune_old_backups
 from ..stores.session_files import (
     build_canonical_clone_path,
     extract_session_id_from_filename,
@@ -30,10 +32,12 @@ def build_clone_index(
     target_provider: str = "",
     active_only: bool = True,
     quiet: bool = False,
+    repair_index: bool = False,
 ) -> set[str]:
     provider = detect_provider(paths, explicit=target_provider)
     cloned_from_ids: set[str] = set()
     total_files = 0
+    existing_index = load_existing_index(paths.index_file) if repair_index else {}
 
     if not quiet:
         print("Building clone index...", end="", flush=True)
@@ -52,6 +56,17 @@ def build_clone_index(
         if isinstance(origin_id, str) and origin_id:
             if is_codex_rollout_compatible(paths, session_file, None):
                 cloned_from_ids.add(origin_id)
+                clone_id = payload.get("id")
+                if repair_index and isinstance(clone_id, str) and clone_id and clone_id not in existing_index:
+                    parent_entry = existing_index.get(origin_id, {})
+                    thread_name = parent_entry.get("thread_name") or origin_id
+                    updated_at = (
+                        normalize_iso(str(payload.get("clone_timestamp", "")))
+                        or normalize_iso(str(payload.get("timestamp", "")))
+                        or datetime.now(timezone.utc).isoformat()
+                    )
+                    upsert_session_index(paths.index_file, clone_id, thread_name, updated_at)
+                    existing_index[clone_id] = {"thread_name": thread_name, "updated_at": updated_at}
 
     if not quiet:
         print(f" Done. Found {len(cloned_from_ids)} existing clones out of {total_files} files.")
@@ -127,6 +142,11 @@ def clone_session_file(
     if not dry_run:
         with atomic_write(new_file_path) as fh:
             fh.writelines(output_lines)
+        existing_index = load_existing_index(paths.index_file)
+        parent_entry = existing_index.get(current_id, {})
+        thread_name = parent_entry.get("thread_name") or current_id
+        updated_at = normalize_iso(str(parent_entry.get("updated_at", ""))) or new_payload["clone_timestamp"]
+        upsert_session_index(paths.index_file, new_id, thread_name, updated_at)
 
     already_cloned_ids.add(current_id)
     action_prefix = "[DRY-RUN] Would create" if dry_run else "Created"
@@ -142,8 +162,29 @@ def clone_to_provider(
     active_only: bool = True,
 ) -> CloneRunResult:
     provider = detect_provider(paths, explicit=target_provider)
-    already_cloned = build_clone_index(paths, target_provider=provider, active_only=active_only)
+    already_cloned = build_clone_index(
+        paths,
+        target_provider=provider,
+        active_only=active_only,
+        repair_index=not dry_run,
+    )
+    _, catalog = _session_catalog(paths, active_only=active_only)
+    root_cache: dict[str, str] = {}
+    depth_cache: dict[str, int] = {}
+    lineages = {}
+    for record in catalog.values():
+        root_id = _root_of(record.session_id, catalog, root_cache)
+        lineages.setdefault(root_id, []).append(record)
+
+    representatives = [
+        max(records, key=lambda record: _representative_key(record, catalog, depth_cache))
+        for records in lineages.values()
+    ]
+    representatives.sort(key=lambda record: _representative_key(record, catalog, depth_cache), reverse=True)
+
     stats = {
+        "lineages": len(representatives),
+        "candidates": 0,
         "cloned": 0,
         "skipped_exists": 0,
         "skipped_target": 0,
@@ -152,10 +193,14 @@ def clone_to_provider(
     messages = []
     errors = []
 
-    for session_file in iter_session_files(paths, active_only=active_only):
+    for representative in representatives:
+        if representative.model_provider == provider:
+            stats["skipped_target"] += 1
+            continue
+        stats["candidates"] += 1
         result = clone_session_file(
             paths,
-            session_file,
+            representative.path,
             target_provider=provider,
             already_cloned_ids=already_cloned,
             dry_run=dry_run,
@@ -164,7 +209,7 @@ def clone_to_provider(
         if result.action == "cloned":
             messages.append(result.message)
         elif result.action == "error":
-            errors.append(f"{session_file.name}: {result.message}")
+            errors.append(f"{representative.path.name}: {result.message}")
 
     return CloneRunResult(
         provider=provider,

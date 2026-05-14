@@ -60,7 +60,13 @@ def _provider_from_declared_models(data: dict[str, Any]) -> str:
     return ""
 
 
-def _provider_from_openai_official(paths: CodexPaths, data: dict[str, Any], text: str) -> str:
+def _provider_from_openai_official(
+    paths: CodexPaths,
+    data: dict[str, Any],
+    text: str,
+    *,
+    require_chatgpt_auth: bool = False,
+) -> str:
     marketplaces = data.get("marketplaces")
     mentions_openai_bundle = isinstance(marketplaces, dict) and "openai-bundled" in marketplaces
     if not mentions_openai_bundle and "openai-bundled" not in text.lower():
@@ -71,7 +77,19 @@ def _provider_from_openai_official(paths: CodexPaths, data: dict[str, Any], text
         auth_data = json.loads(auth_file.read_text(encoding="utf-8")) if auth_file.exists() else {}
     except (OSError, json.JSONDecodeError):
         auth_data = {}
-    if isinstance(auth_data, dict) and _nonempty_str(auth_data.get("OPENAI_API_KEY")):
+    if not isinstance(auth_data, dict):
+        return ""
+
+    auth_mode = _nonempty_str(auth_data.get("auth_mode")).lower()
+    tokens = auth_data.get("tokens")
+    has_chatgpt_tokens = isinstance(tokens, dict) and any(
+        _nonempty_str(tokens.get(key)) for key in ("id_token", "access_token", "refresh_token")
+    )
+    if auth_mode == "chatgpt" and has_chatgpt_tokens:
+        return OPENAI_OFFICIAL_PROVIDER
+    if require_chatgpt_auth:
+        return ""
+    if _nonempty_str(auth_data.get("OPENAI_API_KEY")):
         return OPENAI_OFFICIAL_PROVIDER
     return ""
 
@@ -136,18 +154,12 @@ def detect_provider(paths: CodexPaths, explicit: str = "") -> str:
         raise ToolkitError(f"Missing config file: {config_file}")
 
     data = _load_toml_data(config_file)
+    text = config_file.read_text(encoding="utf-8")
     config_provider = _nonempty_str(data.get("model_provider"))
-    recent_provider, recent_mtime = _provider_from_recent_sessions(paths)
-    try:
-        config_mtime = config_file.stat().st_mtime
-    except OSError:
-        config_mtime = 0.0
-    if (
-        recent_provider == OPENAI_OFFICIAL_PROVIDER
-        and config_provider
-        and _provider_requires_openai_auth(data, config_provider)
-    ):
-        return recent_provider
+    official_provider = _provider_from_openai_official(paths, data, text, require_chatgpt_auth=True)
+    if official_provider:
+        return official_provider
+
     if config_provider:
         return config_provider
 

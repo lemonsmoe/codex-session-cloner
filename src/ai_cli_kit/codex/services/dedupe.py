@@ -5,42 +5,194 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import closing
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from ..models import DedupeResult
 from ..paths import CodexPaths
 from ..services.provider import detect_provider
 from ..stores.index import remove_session_index_entries
-from ..stores.session_files import iter_session_files, read_session_payload
+from ..stores.session_files import iter_session_files, parse_codex_timestamp, parse_jsonl_records, read_session_payload
 from ..support import atomic_write, backup_file, long_path, prune_old_backups
 
 
-def _is_archived_session(path: Path) -> bool:
-    return "archived_sessions" in path.parts
+@dataclass(frozen=True)
+class _SessionRecord:
+    session_id: str
+    model_provider: str
+    cloned_from: str
+    path: Path
+    mtime: float
+    last_timestamp: str
+    last_activity: float
 
 
-def _select_delete_target(
-    original_path: Path,
-    clone_path: Path,
-) -> tuple[Path, Path, str]:
-    original_archived = _is_archived_session(original_path)
-    clone_archived = _is_archived_session(clone_path)
+def _timestamp_score(value: object, fallback: float) -> float:
+    parsed = parse_codex_timestamp(value if isinstance(value, str) else None)
+    if parsed is None:
+        return float(fallback)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.timestamp()
 
-    if original_archived and not clone_archived:
-        return original_path, clone_path, "keep_active_clone"
-    if clone_archived and not original_archived:
-        return clone_path, original_path, "keep_active_original"
-    return clone_path, original_path, "keep_original"
+
+def _session_catalog(paths: CodexPaths, *, active_only: bool) -> tuple[int, dict[str, _SessionRecord]]:
+    files_checked = 0
+    catalog: dict[str, _SessionRecord] = {}
+
+    for session_file in iter_session_files(paths, active_only=active_only):
+        files_checked += 1
+        try:
+            mtime = session_file.stat().st_mtime
+            records = parse_jsonl_records(session_file)
+        except Exception:
+            continue
+
+        payload: dict[str, Any] | None = None
+        last_timestamp = ""
+        for _, obj in records:
+            if not isinstance(obj, dict):
+                continue
+            timestamp = obj.get("timestamp")
+            if isinstance(timestamp, str) and timestamp:
+                last_timestamp = timestamp
+            if obj.get("type") != "session_meta":
+                continue
+            candidate = obj.get("payload")
+            if isinstance(candidate, dict):
+                payload = dict(candidate)
+
+        if payload is None:
+            continue
+        session_id = payload.get("id")
+        if not isinstance(session_id, str) or not session_id:
+            continue
+
+        model_provider = payload.get("model_provider")
+        cloned_from = payload.get("cloned_from")
+        record = _SessionRecord(
+            session_id=session_id,
+            model_provider=model_provider if isinstance(model_provider, str) else "",
+            cloned_from=cloned_from if isinstance(cloned_from, str) else "",
+            path=session_file,
+            mtime=mtime,
+            last_timestamp=last_timestamp,
+            last_activity=_timestamp_score(last_timestamp, mtime),
+        )
+
+        existing = catalog.get(session_id)
+        if existing is None or (record.mtime, str(record.path)) >= (existing.mtime, str(existing.path)):
+            catalog[session_id] = record
+
+    return files_checked, catalog
+
+
+def _root_of(session_id: str, catalog: dict[str, _SessionRecord], cache: dict[str, str] | None = None) -> str:
+    cache = {} if cache is None else cache
+    if session_id in cache:
+        return cache[session_id]
+
+    trail: list[str] = []
+    seen: set[str] = set()
+    current = session_id
+
+    while True:
+        if current in cache:
+            root_id = cache[current]
+            break
+        if current in seen:
+            root_id = current
+            break
+        seen.add(current)
+        trail.append(current)
+
+        record = catalog.get(current)
+        parent_id = record.cloned_from if record is not None else ""
+        if not parent_id or parent_id not in catalog:
+            root_id = current
+            break
+        current = parent_id
+
+    for trail_id in trail:
+        cache[trail_id] = root_id
+    return root_id
+
+
+def _depth_of(session_id: str, catalog: dict[str, _SessionRecord], cache: dict[str, int] | None = None) -> int:
+    cache = {} if cache is None else cache
+    if session_id in cache:
+        return cache[session_id]
+
+    trail: list[str] = []
+    seen: set[str] = set()
+    current = session_id
+    depth = 0
+
+    while True:
+        if current in cache:
+            depth += cache[current]
+            break
+        if current in seen:
+            break
+        seen.add(current)
+        trail.append(current)
+
+        record = catalog.get(current)
+        parent_id = record.cloned_from if record is not None else ""
+        if not parent_id or parent_id not in catalog:
+            break
+        current = parent_id
+        depth += 1
+
+    for index, trail_id in enumerate(trail):
+        cache.setdefault(trail_id, max(depth - index, 0))
+    return cache.get(session_id, depth)
+
+
+def _representative_key(
+    record: _SessionRecord,
+    catalog: dict[str, _SessionRecord],
+    depth_cache: dict[str, int] | None = None,
+) -> tuple[float, int, float, str]:
+    return (
+        record.last_activity,
+        _depth_of(record.session_id, catalog, depth_cache),
+        record.mtime,
+        str(record.path),
+    )
+
+
+def _lineage_duplicate_pairs(catalog: dict[str, _SessionRecord]) -> list[tuple[Path, Path, str]]:
+    root_cache: dict[str, str] = {}
+    depth_cache: dict[str, int] = {}
+    lineages: dict[str, list[_SessionRecord]] = {}
+
+    for record in catalog.values():
+        root_id = _root_of(record.session_id, catalog, root_cache)
+        lineages.setdefault(root_id, []).append(record)
+
+    duplicate_pairs: list[tuple[Path, Path, str]] = []
+    for records in lineages.values():
+        if len(records) <= 1:
+            continue
+        representative = max(records, key=lambda record: _representative_key(record, catalog, depth_cache))
+        for duplicate in sorted(
+            (record for record in records if record.session_id != representative.session_id),
+            key=lambda record: _representative_key(record, catalog, depth_cache),
+            reverse=True,
+        ):
+            duplicate_pairs.append((duplicate.path, representative.path, "lineage_keep_latest_representative"))
+
+    duplicate_pairs.sort(key=lambda pair: (str(pair[1]), str(pair[0])))
+    return duplicate_pairs
 
 
 def _prune_state_file(state_file: Path, deleted_session_ids: set[str]) -> None:
     if not deleted_session_ids or not state_file.exists():
         return
 
-    # Best-effort: the rollout files are already deleted (with backups). If
-    # state.json is corrupt / mid-write by Desktop, leave it — `repair-desktop`
-    # cleans up dangling thread entries — rather than crash mid-cleanup.
     try:
         data = json.loads(state_file.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
@@ -72,10 +224,6 @@ def _delete_threads_rows(state_db: Path | None, deleted_session_ids: set[str]) -
     if not deleted_session_ids or state_db is None or not state_db.exists():
         return
 
-    # long_path() prefixes \\?\ on Windows for paths > MAX_PATH so sqlite3
-    # (which uses CreateFileW under the hood) can open them. POSIX no-op.
-    # Best-effort: rollout files are already removed; a locked / corrupt
-    # state db must not abort cleanup — repair-desktop reconciles later.
     try:
         with closing(sqlite3.connect(long_path(state_db), timeout=30)) as conn:
             cur = conn.cursor()
@@ -110,56 +258,8 @@ def dedupe_clones(
     active_only: bool = False,
 ) -> DedupeResult:
     provider = detect_provider(paths, explicit=target_provider)
-    files_checked = 0
-    sessions_by_id: dict[str, tuple[Path, dict]] = {}
-
-    for session_file in iter_session_files(paths, active_only=active_only):
-        files_checked += 1
-        try:
-            payload = read_session_payload(session_file)
-        except Exception:
-            continue
-
-        session_id = payload.get("id")
-        if not isinstance(session_id, str) or not session_id:
-            continue
-        sessions_by_id[session_id] = (session_file, payload)
-
-    # Build the reverse-edge set: which session ids appear as someone else's `cloned_from`?
-    # If B is A's clone AND C is B's clone, B is a chain intermediate — deleting B would
-    # orphan C's lineage. Skip any candidate that is still referenced by a downstream clone.
-    referenced_as_origin: set[str] = set()
-    for _, payload in sessions_by_id.values():
-        origin = payload.get("cloned_from")
-        if isinstance(origin, str) and origin:
-            referenced_as_origin.add(origin)
-
-    duplicate_pairs: list[tuple[Path, Path, str]] = []
-    seen_delete_paths: set[str] = set()
-
-    for clone_session_id, (clone_path, clone_payload) in sessions_by_id.items():
-        if clone_payload.get("model_provider") != provider:
-            continue
-
-        cloned_from = clone_payload.get("cloned_from")
-        if not isinstance(cloned_from, str) or not cloned_from:
-            continue
-
-        original = sessions_by_id.get(cloned_from)
-        if original is None:
-            continue
-
-        # Skip chain intermediates: this clone is also an origin for another clone.
-        if clone_session_id in referenced_as_origin:
-            continue
-
-        original_path, _ = original
-        delete_path, keep_path, reason = _select_delete_target(original_path, clone_path)
-        delete_key = str(delete_path.resolve())
-        if delete_key in seen_delete_paths:
-            continue
-        seen_delete_paths.add(delete_key)
-        duplicate_pairs.append((delete_path, keep_path, reason))
+    files_checked, catalog = _session_catalog(paths, active_only=active_only)
+    duplicate_pairs = _lineage_duplicate_pairs(catalog)
 
     if dry_run or not duplicate_pairs:
         return DedupeResult(

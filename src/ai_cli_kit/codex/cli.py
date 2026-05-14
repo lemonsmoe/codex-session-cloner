@@ -67,7 +67,7 @@ def create_arg_parser() -> argparse.ArgumentParser:
             "Canonical toolkit commands:\n"
             "  clone-provider        Clone active sessions to the current provider\n"
             "  clean-clones          Remove legacy unmarked clone files\n"
-            "  dedupe-clones         Remove duplicate clone/original pairs conservatively\n"
+            "  dedupe-clones         Remove duplicate lineage sessions, keeping the latest representative\n"
             "  list                  Browse local sessions\n"
             "  list-bundles          Browse exported bundle folders\n"
             "  validate-bundles      Validate bundle folder health\n"

@@ -217,10 +217,16 @@ def repair_desktop(
         cwd = session_meta.get("cwd", "") if isinstance(session_meta.get("cwd", ""), str) else ""
         preview_title = build_session_preview(history_first_messages.get(session_id, ""), session_file, cwd)
         existing_thread_name = existing_index.get(session_id, {}).get("thread_name", "")
+        cloned_from = session_meta.get("cloned_from")
+        parent_thread_name = (
+            existing_index.get(cloned_from, {}).get("thread_name", "")
+            if isinstance(cloned_from, str) and cloned_from
+            else ""
+        )
         thread_name = (
-            preview_title
+            parent_thread_name or preview_title
             if is_placeholder_thread_name(existing_thread_name, session_id)
-            else existing_thread_name or preview_title or session_id
+            else existing_thread_name or parent_thread_name or preview_title or session_id
         )
         if cwd:
             desktop_cwd = _desktop_visible_path(cwd)
