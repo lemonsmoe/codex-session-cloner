@@ -163,12 +163,15 @@ class RepairResult:
     provider: str
     dry_run: bool
     include_cli: bool
+    retag_provider: bool
     entries_scanned: int
     desktop_retagged: int
     cli_converted: int
     skipped_sessions: List[str]
     workspace_roots_count: int
     threads_updated: int
+    visible_thread_ids_count: int
+    workspace_hints_count: int
     backup_root: Optional[Path]
     changed_sessions: List[str]
     warnings: List[str]

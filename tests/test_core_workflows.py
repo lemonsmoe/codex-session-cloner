@@ -458,14 +458,21 @@ class ProviderDetectionTests(unittest.TestCase):
                 json.dumps({"OPENAI_API_KEY": "sk-test"}, separators=(",", ":")),
                 encoding="utf-8",
             )
-            self.assertEqual(detect_provider(CodexPaths(home=home)), "cliproxyapi")
+            self.assertEqual(detect_provider(CodexPaths(home=home)), "openai")
 
-    def test_detect_provider_falls_back_to_latest_session_provider(self) -> None:
+    def test_detect_provider_prefers_latest_session_when_config_is_stale(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             home = Path(tmpdir) / "home"
             code_dir = home / ".codex"
             code_dir.mkdir(parents=True, exist_ok=True)
-            (code_dir / "config.toml").write_text('model = "gpt-5.5"\n', encoding="utf-8")
+            config = code_dir / "config.toml"
+            config.write_text(
+                'model_provider = "right_code"\n'
+                'model = "gpt-5.5"\n'
+                '[model_providers.right_code]\n'
+                'requires_openai_auth = true\n',
+                encoding="utf-8",
+            )
 
             older = write_session(
                 home,
@@ -478,15 +485,96 @@ class ProviderDetectionTests(unittest.TestCase):
             newer = write_session(
                 home,
                 "22222222-2222-2222-2222-222222222222",
-                provider="cliproxyapi",
+                provider="openai",
                 source="vscode",
                 originator="Codex Desktop",
                 cwd=Path("/tmp/project-b"),
+                timestamp="2026-05-14T06:57:36Z",
             )
             os.utime(older, (100, 100))
             os.utime(newer, (200, 200))
+            os.utime(config, (150, 150))
 
-            self.assertEqual(detect_provider(CodexPaths(home=home)), "cliproxyapi")
+            self.assertEqual(detect_provider(CodexPaths(home=home)), "openai")
+
+    def test_detect_provider_uses_session_timestamp_not_file_mtime_for_official_switch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            home = Path(tmpdir) / "home"
+            code_dir = home / ".codex"
+            code_dir.mkdir(parents=True, exist_ok=True)
+            config = code_dir / "config.toml"
+            config.write_text(
+                'model_provider = "right_code"\n'
+                'model = "gpt-5.5"\n'
+                '[model_providers.right_code]\n'
+                'requires_openai_auth = true\n',
+                encoding="utf-8",
+            )
+            stale_touched_session = write_session(
+                home,
+                "11111111-1111-1111-1111-111111111111",
+                provider="right_code",
+                source="vscode",
+                originator="Codex Desktop",
+                cwd=Path("/tmp/project-a"),
+                timestamp="2026-04-01T00:00:00Z",
+            )
+            official_session = write_session(
+                home,
+                "22222222-2222-2222-2222-222222222222",
+                provider="openai",
+                source="vscode",
+                originator="Codex Desktop",
+                cwd=Path("/tmp/project-b"),
+                timestamp="2026-05-14T06:57:36Z",
+            )
+            os.utime(stale_touched_session, (300, 300))
+            os.utime(official_session, (200, 200))
+            os.utime(config, (150, 150))
+
+            self.assertEqual(detect_provider(CodexPaths(home=home)), "openai")
+
+    def test_detect_provider_keeps_config_for_non_openai_recent_session(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            home = Path(tmpdir) / "home"
+            code_dir = home / ".codex"
+            code_dir.mkdir(parents=True, exist_ok=True)
+            config = code_dir / "config.toml"
+            config.write_text('model_provider = "target-provider"\nmodel = "gpt-5.5"\n', encoding="utf-8")
+
+            session = write_session(
+                home,
+                "11111111-1111-1111-1111-111111111111",
+                provider="old-provider",
+                source="vscode",
+                originator="Codex Desktop",
+                cwd=Path("/tmp/project-a"),
+            )
+            os.utime(session, (200, 200))
+            os.utime(config, (100, 100))
+
+            self.assertEqual(detect_provider(CodexPaths(home=home)), "target-provider")
+
+    def test_detect_provider_uses_config_when_it_is_newer_than_sessions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            home = Path(tmpdir) / "home"
+            code_dir = home / ".codex"
+            code_dir.mkdir(parents=True, exist_ok=True)
+            config = code_dir / "config.toml"
+            config.write_text('model_provider = "right_code"\nmodel = "gpt-5.5"\n', encoding="utf-8")
+
+            session = write_session(
+                home,
+                "11111111-1111-1111-1111-111111111111",
+                provider="openai",
+                source="vscode",
+                originator="Codex Desktop",
+                cwd=Path("/tmp/project-a"),
+            )
+            os.utime(session, (100, 100))
+            os.utime(config, (200, 200))
+
+            self.assertEqual(detect_provider(CodexPaths(home=home)), "right_code")
 
     def test_detect_provider_errors_when_no_provider_signal_exists(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1019,7 +1107,7 @@ class CoreWorkflowTests(unittest.TestCase):
             write_history(home, cli_id, "cli message")
 
             paths = CodexPaths(home=home)
-            result = repair_desktop(paths, include_cli=True)
+            result = repair_desktop(paths, include_cli=True, retag_provider=True)
 
             self.assertEqual(result.desktop_retagged, 1)
             self.assertEqual(result.cli_converted, 1)
@@ -1042,6 +1130,48 @@ class CoreWorkflowTests(unittest.TestCase):
             state_data = json.loads((home / ".codex" / ".codex-global-state.json").read_text(encoding="utf-8"))
             self.assertIn(str(desktop_cwd), state_data["electron-saved-workspace-roots"])
             self.assertIn(str(cli_cwd), state_data["electron-saved-workspace-roots"])
+            atom_state = state_data["electron-persisted-atom-state"]
+            self.assertNotIn(desktop_id, state_data.get("projectless-thread-ids", []))
+            self.assertIn(desktop_id, atom_state["heartbeat-thread-permissions-by-id"])
+            self.assertEqual(
+                atom_state["heartbeat-thread-permissions-by-id"][desktop_id]["sandboxPolicy"]["writableRoots"],
+                [str(desktop_cwd)],
+            )
+
+    def test_repair_desktop_does_not_retag_other_providers_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir) / "workspace"
+            home = Path(tmpdir) / "home"
+            workspace.mkdir()
+            write_config(home, "target-provider")
+            write_state_file(home)
+            create_threads_db(home)
+
+            project_cwd = workspace / "project"
+            project_cwd.mkdir()
+            session_id = "99999999-9999-4999-8999-999999999999"
+            write_session(
+                home,
+                session_id,
+                provider="old-provider",
+                source="vscode",
+                originator="Codex Desktop",
+                cwd=project_cwd,
+            )
+
+            paths = CodexPaths(home=home)
+            result = repair_desktop(paths)
+
+            self.assertEqual(result.desktop_retagged, 0)
+            payload = read_session_payload(
+                home / ".codex" / "sessions" / "2026" / "04" / "10" / f"rollout-2026-04-10T10-00-00-{session_id}.jsonl"
+            )
+            self.assertEqual(payload["model_provider"], "old-provider")
+
+            conn = sqlite3.connect(home / ".codex" / "state_0001.sqlite")
+            row = conn.execute("select model_provider from threads where id = ?", (session_id,)).fetchone()
+            conn.close()
+            self.assertEqual(row, ("old-provider",))
 
     def test_repair_desktop_uses_session_preview_when_thread_name_is_uuid_placeholder(self) -> None:
         tmpdir = tempfile.mkdtemp()
@@ -1082,6 +1212,42 @@ class CoreWorkflowTests(unittest.TestCase):
             ).fetchone()
             conn.close()
             self.assertEqual(row, ("修复波动监控标题回填逻辑", "修复波动监控标题回填逻辑"))
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def test_repair_desktop_strips_windows_long_path_prefix_from_visibility_state(self) -> None:
+        tmpdir = tempfile.mkdtemp()
+        try:
+            workspace = Path(tmpdir) / "workspace"
+            home = Path(tmpdir) / "home"
+            workspace.mkdir()
+            write_config(home, "target-provider")
+            write_state_file(home)
+            create_threads_db(home)
+
+            project_cwd = workspace / "project"
+            project_cwd.mkdir()
+            prefixed_cwd = Path("\\\\?\\" + str(project_cwd))
+            session_id = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+            write_session(
+                home,
+                session_id,
+                provider="target-provider",
+                source="vscode",
+                originator="Codex Desktop",
+                cwd=prefixed_cwd,
+            )
+
+            paths = CodexPaths(home=home)
+            repair_desktop(paths)
+
+            state_data = json.loads((home / ".codex" / ".codex-global-state.json").read_text(encoding="utf-8"))
+            self.assertEqual(
+                state_data["electron-persisted-atom-state"]["heartbeat-thread-permissions-by-id"][session_id]["sandboxPolicy"]["writableRoots"],
+                [str(project_cwd)],
+            )
+            self.assertIn(str(project_cwd), state_data["electron-saved-workspace-roots"])
+            self.assertNotIn(str(prefixed_cwd), state_data["electron-saved-workspace-roots"])
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
 

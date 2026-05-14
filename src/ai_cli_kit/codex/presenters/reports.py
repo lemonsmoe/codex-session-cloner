@@ -230,12 +230,15 @@ def print_repair_result(result: RepairResult) -> int:
     print(f"Target model provider: {result.provider}")
     print(f"Dry run: {'yes' if result.dry_run else 'no'}")
     print(f"Include CLI: {'yes' if result.include_cli else 'no'}")
+    print(f"Retag provider: {'yes' if result.retag_provider else 'no'}")
     print(f"Valid session files scanned: {result.entries_scanned}")
     print(f"Desktop session files retagged: {result.desktop_retagged}")
     print(f"CLI session files converted: {result.cli_converted}")
     print(f"Skipped invalid session files: {len(result.skipped_sessions)}")
     print(f"Workspace roots active after repair: {result.workspace_roots_count}")
     print(f"Desktop thread rows upserted: {result.threads_updated}")
+    print(f"Desktop-visible thread ids registered: {result.visible_thread_ids_count}")
+    print(f"Thread workspace hints registered: {result.workspace_hints_count}")
     if result.backup_root is not None:
         print(f"Backup directory: {result.backup_root}")
 

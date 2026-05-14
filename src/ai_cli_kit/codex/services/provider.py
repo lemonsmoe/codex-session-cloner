@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime
 from typing import Any
 
 from ..errors import ToolkitError
@@ -15,7 +16,7 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
     tomllib = None
 
 
-OPENAI_OFFICIAL_PROVIDER = "cliproxyapi"
+OPENAI_OFFICIAL_PROVIDER = "openai"
 
 
 def _nonempty_str(value: Any) -> str:
@@ -75,7 +76,27 @@ def _provider_from_openai_official(paths: CodexPaths, data: dict[str, Any], text
     return ""
 
 
-def _provider_from_recent_sessions(paths: CodexPaths) -> str:
+def _provider_requires_openai_auth(data: dict[str, Any], provider_name: str) -> bool:
+    providers = data.get("model_providers")
+    if not isinstance(providers, dict) or not provider_name:
+        return False
+    provider = providers.get(provider_name)
+    return isinstance(provider, dict) and provider.get("requires_openai_auth") is True
+
+
+def _timestamp_score(value: Any, fallback: float) -> float:
+    if isinstance(value, str) and value:
+        normalized = value.strip()
+        if normalized.endswith("Z"):
+            normalized = normalized[:-1] + "+00:00"
+        try:
+            return datetime.fromisoformat(normalized).timestamp()
+        except ValueError:
+            pass
+    return fallback
+
+
+def _provider_from_recent_sessions(paths: CodexPaths) -> tuple[str, float]:
     candidates: list[tuple[float, str]] = []
     for root in (paths.sessions_dir, paths.archived_sessions_dir):
         if not root.exists():
@@ -95,14 +116,15 @@ def _provider_from_recent_sessions(paths: CodexPaths) -> str:
                     continue
                 provider = _nonempty_str(payload.get("model_provider"))
                 if provider:
-                    candidates.append((mtime, provider))
+                    candidates.append((_timestamp_score(payload.get("timestamp") or obj.get("timestamp"), mtime), provider))
             except (OSError, json.JSONDecodeError):
                 continue
 
     if not candidates:
-        return ""
+        return "", 0.0
     candidates.sort(key=lambda item: item[0], reverse=True)
-    return candidates[0][1]
+    mtime, provider = candidates[0]
+    return provider, mtime
 
 
 def detect_provider(paths: CodexPaths, explicit: str = "") -> str:
@@ -114,9 +136,20 @@ def detect_provider(paths: CodexPaths, explicit: str = "") -> str:
         raise ToolkitError(f"Missing config file: {config_file}")
 
     data = _load_toml_data(config_file)
-    provider = _nonempty_str(data.get("model_provider"))
-    if provider:
-        return provider
+    config_provider = _nonempty_str(data.get("model_provider"))
+    recent_provider, recent_mtime = _provider_from_recent_sessions(paths)
+    try:
+        config_mtime = config_file.stat().st_mtime
+    except OSError:
+        config_mtime = 0.0
+    if (
+        recent_provider == OPENAI_OFFICIAL_PROVIDER
+        and config_provider
+        and _provider_requires_openai_auth(data, config_provider)
+    ):
+        return recent_provider
+    if config_provider:
+        return config_provider
 
     text = config_file.read_text(encoding="utf-8")
     provider = _provider_from_text(text)
@@ -131,7 +164,7 @@ def detect_provider(paths: CodexPaths, explicit: str = "") -> str:
     if provider:
         return provider
 
-    provider = _provider_from_recent_sessions(paths)
+    provider, _ = _provider_from_recent_sessions(paths)
     if provider:
         return provider
 

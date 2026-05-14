@@ -49,12 +49,56 @@ def _sqlite_value(value: Any) -> Any:
     return str(value)
 
 
+def _desktop_visible_path(value: str) -> str:
+    """Strip Windows long-path prefixes before writing Desktop state JSON."""
+    if value.startswith("\\\\?\\UNC\\"):
+        return "\\\\" + value[8:]
+    if value.startswith("\\\\?\\"):
+        return value[4:]
+    return value
+
+
+def _merge_ordered_strings(existing: object, additions: list[str]) -> list[str]:
+    result = [item for item in existing if isinstance(item, str)] if isinstance(existing, list) else []
+    seen = set(result)
+    for item in additions:
+        if item and item not in seen:
+            result.append(item)
+            seen.add(item)
+    return result
+
+
+def _merge_string_mapping(existing: object, updates: dict[str, str]) -> dict[str, str]:
+    result = (
+        {key: value for key, value in existing.items() if isinstance(key, str) and isinstance(value, str)}
+        if isinstance(existing, dict)
+        else {}
+    )
+    result.update({key: value for key, value in updates.items() if key and value})
+    return result
+
+
+def _workspace_write_permission(workspace_root: str) -> dict:
+    return {
+        "approvalPolicy": "on-request",
+        "approvalsReviewer": "user",
+        "sandboxPolicy": {
+            "type": "workspaceWrite",
+            "writableRoots": [workspace_root],
+            "excludeSlashTmp": False,
+            "excludeTmpdirEnvVar": False,
+            "networkAccess": False,
+        },
+    }
+
+
 def repair_desktop(
     paths: CodexPaths,
     *,
     target_provider: str = "",
     dry_run: bool = False,
     include_cli: bool = False,
+    retag_provider: bool = False,
 ) -> RepairResult:
     if not paths.code_dir.is_dir():
         raise ToolkitError(f"Missing Codex data directory: {paths.code_dir}")
@@ -75,6 +119,9 @@ def repair_desktop(
     changed_sessions: list[str] = []
     skipped_sessions: list[str] = []
     workspace_candidates: "OrderedDict[str, bool]" = OrderedDict()
+    visible_thread_ids: list[str] = []
+    thread_workspace_hints: dict[str, str] = {}
+    thread_permissions: dict[str, dict] = {}
     desktop_retagged = 0
     cli_converted = 0
 
@@ -121,7 +168,7 @@ def repair_desktop(
         updated_meta = dict(session_meta)
         changed = False
 
-        if desktop_like and provider and updated_meta.get("model_provider") != provider:
+        if retag_provider and desktop_like and provider and updated_meta.get("model_provider") != provider:
             updated_meta["model_provider"] = provider
             changed = True
             desktop_retagged += 1
@@ -176,9 +223,20 @@ def repair_desktop(
             else existing_thread_name or preview_title or session_id
         )
         if cwd:
-            candidate = nearest_existing_parent(cwd) or cwd
+            desktop_cwd = _desktop_visible_path(cwd)
+            candidate = nearest_existing_parent(desktop_cwd) or desktop_cwd
             if candidate and candidate not in workspace_candidates:
                 workspace_candidates[candidate] = True
+
+        archived = 1 if "archived_sessions" in session_file.parts else 0
+        if desktop_like and provider and session_meta.get("model_provider") == provider and not archived:
+            if cwd:
+                desktop_cwd = _desktop_visible_path(cwd)
+                workspace_root = _desktop_visible_path(nearest_existing_parent(desktop_cwd) or desktop_cwd)
+                if workspace_root.lower().startswith(str(paths.code_dir).lower()):
+                    visible_thread_ids.append(session_id)
+                    thread_workspace_hints[session_id] = str(paths.code_dir)
+                thread_permissions[session_id] = _workspace_write_permission(workspace_root)
 
         entries.append(
             {
@@ -199,7 +257,7 @@ def repair_desktop(
                 "cli_version": session_meta.get("cli_version", "") if isinstance(session_meta.get("cli_version", ""), str) else "",
                 "model": turn_context.get("model"),
                 "reasoning_effort": turn_context.get("effort"),
-                "archived": 1 if "archived_sessions" in session_file.parts else 0,
+                "archived": archived,
             }
         )
 
@@ -262,6 +320,31 @@ def repair_desktop(
             state_data["electron-saved-workspace-roots"] = saved_roots
             state_data["active-workspace-roots"] = list(saved_roots)
             state_data["project-order"] = project_order
+            state_data["projectless-thread-ids"] = _merge_ordered_strings(
+                state_data.get("projectless-thread-ids"),
+                visible_thread_ids,
+            )
+            state_data["thread-workspace-root-hints"] = _merge_string_mapping(
+                state_data.get("thread-workspace-root-hints"),
+                thread_workspace_hints,
+            )
+            atom_state = state_data.setdefault("electron-persisted-atom-state", {})
+            if isinstance(atom_state, dict):
+                atom_state["projectless-thread-ids"] = _merge_ordered_strings(
+                    atom_state.get("projectless-thread-ids"),
+                    visible_thread_ids,
+                )
+                atom_state["thread-workspace-root-hints"] = _merge_string_mapping(
+                    atom_state.get("thread-workspace-root-hints"),
+                    thread_workspace_hints,
+                )
+                existing_permissions = atom_state.get("heartbeat-thread-permissions-by-id")
+                if not isinstance(existing_permissions, dict):
+                    existing_permissions = {}
+                merged_permissions = dict(existing_permissions)
+                for session_id, permission in thread_permissions.items():
+                    merged_permissions.setdefault(session_id, permission)
+                atom_state["heartbeat-thread-permissions-by-id"] = merged_permissions
         else:
             state_data = dict(state_data)
             state_data["active-workspace-roots"] = list(saved_roots)
@@ -292,7 +375,7 @@ def repair_desktop(
                         "created_at": iso_to_epoch(entry["created_iso"]),
                         "updated_at": iso_to_epoch(entry["updated_iso"]),
                         "source": (entry["source"] if isinstance(entry["source"], str) and entry["source"] else "vscode"),
-                        "model_provider": provider,
+                        "model_provider": entry["model_provider"] or provider,
                         "cwd": entry["cwd"],
                         "title": entry["thread_name"],
                         "sandbox_policy": entry["sandbox_policy"],
@@ -327,12 +410,15 @@ def repair_desktop(
         provider=provider,
         dry_run=dry_run,
         include_cli=include_cli,
+        retag_provider=retag_provider,
         entries_scanned=len(entries),
         desktop_retagged=desktop_retagged,
         cli_converted=cli_converted,
         skipped_sessions=skipped_sessions,
         workspace_roots_count=len(state_data.get("active-workspace-roots", [])),
         threads_updated=threads_updated,
+        visible_thread_ids_count=len(visible_thread_ids),
+        workspace_hints_count=len(thread_workspace_hints),
         backup_root=(None if dry_run else backup_root),
         changed_sessions=changed_sessions,
         warnings=warnings,
