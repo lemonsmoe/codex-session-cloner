@@ -25,10 +25,11 @@ from ai_cli_kit.codex.services.exporting import export_active_desktop_all, expor
 from ai_cli_kit.codex.services.importing import import_desktop_all, import_session  # noqa: E402
 from ai_cli_kit.codex.services.provider import detect_provider  # noqa: E402
 from ai_cli_kit.codex.services.repair import repair_desktop  # noqa: E402
+from ai_cli_kit.codex.services.switching import restore_repair_backup, switch_provider  # noqa: E402
 from ai_cli_kit.codex.support import machine_label_to_key  # noqa: E402
 from ai_cli_kit.codex.stores.bundles import collect_known_bundle_summaries, latest_distinct_bundle_summaries  # noqa: E402
 from ai_cli_kit.codex.stores.index import load_existing_index  # noqa: E402
-from ai_cli_kit.codex.stores.session_files import iter_session_files, read_session_payload  # noqa: E402
+from ai_cli_kit.codex.stores.session_files import iter_session_files, parse_jsonl_records, read_session_payload  # noqa: E402
 from ai_cli_kit.codex.validation import load_manifest, validate_relative_path  # noqa: E402
 
 
@@ -132,6 +133,7 @@ def write_session(
     user_message: str = "",
     include_env_context: bool = False,
     cloned_from: str = "",
+    extra_session_meta_payloads: list[dict] | None = None,
 ) -> Path:
     base = home / ".codex" / ("archived_sessions" if archived else "sessions") / "2026" / "04" / "10"
     base.mkdir(parents=True, exist_ok=True)
@@ -176,6 +178,14 @@ def write_session(
                     "role": "user",
                     "content": [{"type": "input_text", "text": user_message}],
                 },
+            }
+        )
+    for extra_payload in extra_session_meta_payloads or []:
+        lines.append(
+            {
+                "timestamp": "2026-04-10T10:04:50Z",
+                "type": "session_meta",
+                "payload": extra_payload,
             }
         )
     lines.extend(
@@ -445,7 +455,7 @@ class ProviderDetectionTests(unittest.TestCase):
             )
             self.assertEqual(detect_provider(CodexPaths(home=home)), "only_one")
 
-    def test_detect_provider_infers_openai_official_from_bundled_auth(self) -> None:
+    def test_detect_provider_does_not_infer_openai_from_bundled_api_key_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             home = Path(tmpdir) / "home"
             code_dir = home / ".codex"
@@ -458,7 +468,8 @@ class ProviderDetectionTests(unittest.TestCase):
                 json.dumps({"OPENAI_API_KEY": "sk-test"}, separators=(",", ":")),
                 encoding="utf-8",
             )
-            self.assertEqual(detect_provider(CodexPaths(home=home)), "openai")
+            with self.assertRaises(ToolkitError):
+                detect_provider(CodexPaths(home=home))
 
     def test_detect_provider_keeps_explicit_config_over_bundled_api_key(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -523,6 +534,32 @@ class ProviderDetectionTests(unittest.TestCase):
             )
 
             self.assertEqual(detect_provider(CodexPaths(home=home)), "openai")
+
+    def test_detect_provider_keeps_explicit_config_over_chatgpt_auth_tokens(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            home = Path(tmpdir) / "home"
+            code_dir = home / ".codex"
+            code_dir.mkdir(parents=True, exist_ok=True)
+            (code_dir / "config.toml").write_text(
+                'model_provider = "right_code"\n'
+                '[marketplaces.openai-bundled]\nsource_type = "local"\nsource = "C:/tmp/openai-bundled"\n',
+                encoding="utf-8",
+            )
+            (code_dir / "auth.json").write_text(
+                json.dumps(
+                    {
+                        "auth_mode": "chatgpt",
+                        "tokens": {
+                            "id_token": "id-token",
+                            "access_token": "access-token",
+                        },
+                    },
+                    separators=(",", ":"),
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(detect_provider(CodexPaths(home=home)), "right_code")
 
     def test_detect_provider_keeps_explicit_config_over_recent_openai_session(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -931,6 +968,15 @@ class CoreWorkflowTests(unittest.TestCase):
                 source="cli",
                 originator="codex_cli_rs",
                 cwd=original_cwd,
+                extra_session_meta_payloads=[
+                    {
+                        "id": "99999999-1111-4111-8111-111111111111",
+                        "model_provider": "old-provider",
+                        "source": "cli",
+                        "originator": "codex_cli_rs",
+                        "cwd": str(original_cwd),
+                    }
+                ],
             )
             write_history(home, original_id, "hello clone")
             paths = CodexPaths(home=home, cwd=workspace)
@@ -946,6 +992,9 @@ class CoreWorkflowTests(unittest.TestCase):
             self.assertEqual(cloned_payload["model_provider"], "target-provider")
             self.assertEqual(cloned_payload["cloned_from"], original_id)
             self.assertEqual(cloned_payload["original_provider"], "old-provider")
+            cloned_records = [obj for _, obj in parse_jsonl_records(cloned_file) if obj]
+            self.assertEqual(sum(1 for obj in cloned_records if obj.get("type") == "session_meta"), 1)
+            self.assertEqual(sum(1 for obj in cloned_records if obj.get("type") == "session_meta_embedded"), 1)
             index_entry = load_existing_index(home / ".codex" / "session_index.jsonl")[cloned_payload["id"]]
             self.assertEqual(index_entry["thread_name"], original_id)
 
@@ -982,24 +1031,63 @@ class CoreWorkflowTests(unittest.TestCase):
             self.assertEqual(len(clone_sessions), 1)
             clone_path = clone_sessions[0]
             clone_id = read_session_payload(clone_path)["id"]
+            duplicate_clone_id = "51515151-5151-4151-8151-515151515151"
+            duplicate_clone_path = write_session(
+                home,
+                duplicate_clone_id,
+                provider="target-provider",
+                source="vscode",
+                originator="Codex Desktop",
+                cwd=project_cwd,
+                cloned_from=original_id,
+                timestamp="2026-04-10T11:00:00Z",
+            )
+            os.utime(clone_path, (1000, 1000))
+            os.utime(duplicate_clone_path, (2000, 2000))
+            repair_desktop(paths, target_provider="target-provider")
+            state_file = home / ".codex" / ".codex-global-state.json"
+            state_data = json.loads(state_file.read_text(encoding="utf-8"))
+            state_data["projectless-thread-ids"] = [clone_id, duplicate_clone_id]
+            state_data["thread-workspace-root-hints"][clone_id] = str(project_cwd)
+            atom_state = state_data["electron-persisted-atom-state"]
+            atom_state["projectless-thread-ids"] = [clone_id, duplicate_clone_id]
+            atom_state["thread-workspace-root-hints"][clone_id] = str(project_cwd)
+            atom_state["heartbeat-thread-permissions-by-id"][clone_id] = {"stale": True}
+            atom_state["thread-titles"] = {"titles": {clone_id: "old title", duplicate_clone_id: "new title"}}
+            state_file.write_text(json.dumps(state_data, separators=(",", ":")) + "\n", encoding="utf-8")
 
             dry_run_result = dedupe_clones(paths, target_provider="target-provider", dry_run=True)
             self.assertEqual(len(dry_run_result.duplicate_pairs), 1)
 
             result = dedupe_clones(paths, target_provider="target-provider", dry_run=False)
             self.assertEqual(len(result.deleted_session_ids), 1)
-            self.assertEqual(result.deleted_session_ids[0], original_id)
-            self.assertFalse(any(original_id in str(path) for path in iter_session_files(paths, active_only=False)))
-            self.assertTrue(clone_path.exists())
+            self.assertEqual(result.deleted_session_ids[0], clone_id)
+            self.assertTrue(any(original_id in str(path) for path in iter_session_files(paths, active_only=False)))
+            self.assertFalse(clone_path.exists())
+            self.assertTrue(duplicate_clone_path.exists())
 
             index_entries = load_existing_index(home / ".codex" / "session_index.jsonl")
-            self.assertNotIn(original_id, index_entries)
-            self.assertIn(clone_id, index_entries)
+            self.assertIn(original_id, index_entries)
+            self.assertNotIn(clone_id, index_entries)
+            self.assertIn(duplicate_clone_id, index_entries)
 
             conn = sqlite3.connect(home / ".codex" / "state_0001.sqlite")
-            count = conn.execute("select count(*) from threads where id = ?", (original_id,)).fetchone()[0]
+            count = conn.execute("select count(*) from threads where id = ?", (clone_id,)).fetchone()[0]
             conn.close()
             self.assertEqual(count, 0)
+
+            state_data = json.loads(state_file.read_text(encoding="utf-8"))
+            self.assertNotIn(clone_id, state_data.get("projectless-thread-ids", []))
+            self.assertNotIn(clone_id, state_data.get("thread-workspace-root-hints", {}))
+            atom_state = state_data["electron-persisted-atom-state"]
+            self.assertNotIn(clone_id, atom_state.get("projectless-thread-ids", []))
+            self.assertNotIn(clone_id, atom_state.get("thread-workspace-root-hints", {}))
+            self.assertNotIn(clone_id, atom_state.get("heartbeat-thread-permissions-by-id", {}))
+            self.assertNotIn(clone_id, atom_state["thread-titles"]["titles"])
+            self.assertTrue(result.backup_root.is_dir())
+            self.assertTrue(any(result.backup_root.rglob("session_index.jsonl")))
+            self.assertTrue(any(result.backup_root.rglob("state_0001.sqlite")))
+            self.assertTrue(any(result.backup_root.rglob(".codex-global-state.json")))
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
 
@@ -1037,10 +1125,51 @@ class CoreWorkflowTests(unittest.TestCase):
 
             delete_paths = {str(p) for p, _, _ in result.duplicate_pairs}
             keep_paths = {str(p) for _, p, _ in result.duplicate_pairs}
-            self.assertEqual(len(result.duplicate_pairs), 2)
-            self.assertTrue(any(a_id in p for p in delete_paths))
-            self.assertTrue(any(b_id in p for p in delete_paths))
-            self.assertTrue(all(c_id in p for p in keep_paths))
+            self.assertEqual(result.duplicate_pairs, [])
+            self.assertFalse(any(a_id in p for p in delete_paths))
+            self.assertFalse(any(b_id in p for p in delete_paths))
+            self.assertFalse(any(c_id in p for p in keep_paths))
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def test_dedupe_clones_uses_first_session_meta_as_file_identity(self) -> None:
+        tmpdir = tempfile.mkdtemp()
+        try:
+            workspace = Path(tmpdir) / "workspace"
+            home = Path(tmpdir) / "home"
+            workspace.mkdir()
+            write_config(home, "target-provider")
+            project_cwd = workspace / "project-embedded-meta"
+            project_cwd.mkdir()
+
+            original_id = "aaaaaaaa-4444-4000-8000-000000000001"
+            clone_id = "bbbbbbbb-4444-4000-8000-000000000002"
+            write_session(home, original_id, provider="old-provider", source="vscode",
+                          originator="Codex Desktop", cwd=project_cwd)
+            write_session(
+                home,
+                clone_id,
+                provider="target-provider",
+                source="vscode",
+                originator="Codex Desktop",
+                cwd=project_cwd,
+                cloned_from=original_id,
+                extra_session_meta_payloads=[
+                    {
+                        "id": original_id,
+                        "model_provider": "old-provider",
+                        "source": "vscode",
+                        "originator": "Codex Desktop",
+                        "cwd": str(project_cwd),
+                        "timestamp": "2026-04-10T09:00:00Z",
+                    }
+                ],
+            )
+
+            paths = CodexPaths(home=home, cwd=workspace)
+            result = dedupe_clones(paths, target_provider="target-provider", dry_run=True)
+
+            self.assertEqual(result.duplicate_pairs, [])
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
 
@@ -1081,7 +1210,8 @@ class CoreWorkflowTests(unittest.TestCase):
 
             delete_paths = {str(p) for p, _, _ in result.duplicate_pairs}
             keep_paths = {str(p) for _, p, _ in result.duplicate_pairs}
-            self.assertEqual(len(result.duplicate_pairs), 3)
+            self.assertEqual(len(result.duplicate_pairs), 1)
+            self.assertFalse(any(a_id in p for p in delete_paths))
             self.assertFalse(any(d_id in p for p in delete_paths))
             self.assertTrue(all(d_id in p for p in keep_paths))
         finally:
@@ -1313,6 +1443,8 @@ class CoreWorkflowTests(unittest.TestCase):
             self.assertIn(str(cli_cwd), state_data["electron-saved-workspace-roots"])
             atom_state = state_data["electron-persisted-atom-state"]
             self.assertNotIn(desktop_id, state_data.get("projectless-thread-ids", []))
+            self.assertEqual(atom_state["thread-workspace-root-hints"][desktop_id], str(desktop_cwd))
+            self.assertEqual(atom_state["thread-workspace-root-hints"][cli_id], str(cli_cwd))
             self.assertIn(desktop_id, atom_state["heartbeat-thread-permissions-by-id"])
             self.assertEqual(
                 atom_state["heartbeat-thread-permissions-by-id"][desktop_id]["sandboxPolicy"]["writableRoots"],
@@ -1426,6 +1558,16 @@ class CoreWorkflowTests(unittest.TestCase):
                 originator="Codex Desktop",
                 cwd=project_cwd,
                 cloned_from=parent_id,
+                extra_session_meta_payloads=[
+                    {
+                        "id": parent_id,
+                        "model_provider": "old-provider",
+                        "source": "vscode",
+                        "originator": "Codex Desktop",
+                        "cwd": str(project_cwd),
+                        "timestamp": "2026-04-10T09:00:00Z",
+                    }
+                ],
             )
             index_file = home / ".codex" / "session_index.jsonl"
             index_file.write_text(
@@ -1449,6 +1591,11 @@ class CoreWorkflowTests(unittest.TestCase):
             self.assertEqual(index_entry["thread_name"], "大夹爪-manager")
 
             conn = sqlite3.connect(home / ".codex" / "state_0001.sqlite")
+            clone_file = home / ".codex" / "sessions" / "2026" / "04" / "10" / f"rollout-2026-04-10T10-00-00-{clone_id}.jsonl"
+            cloned_records = [obj for _, obj in parse_jsonl_records(clone_file) if obj]
+            self.assertEqual(sum(1 for obj in cloned_records if obj.get("type") == "session_meta"), 1)
+            self.assertEqual(sum(1 for obj in cloned_records if obj.get("type") == "session_meta_embedded"), 1)
+
             row = conn.execute("select title from threads where id = ?", (clone_id,)).fetchone()
             conn.close()
             self.assertEqual(row, ("大夹爪-manager",))
@@ -1488,6 +1635,78 @@ class CoreWorkflowTests(unittest.TestCase):
             )
             self.assertIn(str(project_cwd), state_data["electron-saved-workspace-roots"])
             self.assertNotIn(str(prefixed_cwd), state_data["electron-saved-workspace-roots"])
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def test_switch_provider_retags_in_place_and_creates_restore_backup(self) -> None:
+        tmpdir = tempfile.mkdtemp()
+        try:
+            workspace = Path(tmpdir) / "workspace"
+            home = Path(tmpdir) / "home"
+            workspace.mkdir()
+            write_config(home, "openai")
+            write_state_file(home)
+            create_threads_db(home)
+
+            project_cwd = workspace / "project-switch"
+            project_cwd.mkdir()
+            session_id = "abababab-5555-4555-8555-abababababab"
+            session_file = write_session(
+                home,
+                session_id,
+                provider="right_code",
+                source="vscode",
+                originator="Codex Desktop",
+                cwd=project_cwd,
+            )
+
+            paths = CodexPaths(home=home)
+            dry_run = switch_provider(paths, target_provider="openai", dry_run=True)
+            self.assertEqual(dry_run.repair_result.desktop_retagged, 1)
+            self.assertEqual(read_session_payload(session_file)["model_provider"], "right_code")
+
+            result = switch_provider(paths, target_provider="openai", dry_run=False)
+            self.assertEqual(result.repair_result.desktop_retagged, 1)
+            self.assertIsNotNone(result.repair_result.backup_root)
+            self.assertEqual(read_session_payload(session_file)["model_provider"], "openai")
+
+            conn = sqlite3.connect(home / ".codex" / "state_0001.sqlite")
+            row = conn.execute("select model_provider from threads where id = ?", (session_id,)).fetchone()
+            conn.close()
+            self.assertEqual(row, ("openai",))
+
+            restore = restore_repair_backup(paths, result.repair_result.backup_root)
+            self.assertFalse(restore.errors)
+            self.assertGreaterEqual(len(restore.files_restored), 1)
+            self.assertEqual(read_session_payload(session_file)["model_provider"], "right_code")
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def test_restore_backup_dry_run_lists_targets_without_writing(self) -> None:
+        tmpdir = tempfile.mkdtemp()
+        try:
+            workspace = Path(tmpdir) / "workspace"
+            home = Path(tmpdir) / "home"
+            workspace.mkdir()
+            write_config(home, "openai")
+            write_state_file(home)
+            create_threads_db(home)
+            session_id = "cdcdcdcd-6666-4666-8666-cdcdcdcdcdcd"
+            session_file = write_session(
+                home,
+                session_id,
+                provider="right_code",
+                source="vscode",
+                originator="Codex Desktop",
+                cwd=workspace,
+            )
+
+            paths = CodexPaths(home=home)
+            result = switch_provider(paths, target_provider="openai", dry_run=False)
+            restore = restore_repair_backup(paths, result.repair_result.backup_root, dry_run=True)
+
+            self.assertTrue(any(path == session_file for path in restore.files_restored))
+            self.assertEqual(read_session_payload(session_file)["model_provider"], "openai")
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
 

@@ -6,7 +6,7 @@ import json
 import os
 import sqlite3
 from collections import OrderedDict
-from contextlib import closing
+from contextlib import closing, nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -134,17 +134,23 @@ def repair_desktop(
             continue
 
         session_meta = None
+        session_meta_index = -1
+        embedded_session_meta_indices: set[int] = set()
         turn_context: dict = {}
         last_timestamp = ""
 
-        for raw, obj in records:
+        for idx, (raw, obj) in enumerate(records):
             if not obj:
                 continue
             timestamp = obj.get("timestamp")
             if isinstance(timestamp, str) and timestamp:
                 last_timestamp = timestamp
             if obj.get("type") == "session_meta" and isinstance(obj.get("payload"), dict):
-                session_meta = dict(obj["payload"])
+                if session_meta is None:
+                    session_meta_index = idx
+                    session_meta = dict(obj["payload"])
+                else:
+                    embedded_session_meta_indices.add(idx)
             elif obj.get("type") == "turn_context" and not turn_context and isinstance(obj.get("payload"), dict):
                 turn_context = dict(obj["payload"])
 
@@ -167,6 +173,7 @@ def repair_desktop(
 
         updated_meta = dict(session_meta)
         changed = False
+        sanitize_embedded_meta = False
 
         if retag_provider and desktop_like and provider and updated_meta.get("model_provider") != provider:
             updated_meta["model_provider"] = provider
@@ -190,18 +197,25 @@ def repair_desktop(
             session_kind = "desktop"
             desktop_like = True
 
-        if changed:
+        if embedded_session_meta_indices and desktop_like and provider and updated_meta.get("model_provider") == provider:
+            sanitize_embedded_meta = True
+
+        if changed or sanitize_embedded_meta:
             changed_sessions.append(str(session_file))
             if not dry_run:
                 backup_file(paths.code_dir, backup_root, backed_up, session_file, enabled=True)
                 with atomic_write(session_file) as fh:
-                    for raw, obj in records:
+                    for idx, (raw, obj) in enumerate(records):
                         if not obj:
                             fh.write(raw)
                             continue
-                        if obj.get("type") == "session_meta" and isinstance(obj.get("payload"), dict):
+                        if idx == session_meta_index and obj.get("type") == "session_meta" and isinstance(obj.get("payload"), dict):
                             patched = dict(obj)
                             patched["payload"] = updated_meta
+                            fh.write(json.dumps(patched, ensure_ascii=False, separators=(",", ":")) + "\n")
+                        elif idx in embedded_session_meta_indices and obj.get("type") == "session_meta":
+                            patched = dict(obj)
+                            patched["type"] = "session_meta_embedded"
                             fh.write(json.dumps(patched, ensure_ascii=False, separators=(",", ":")) + "\n")
                         else:
                             fh.write(raw)
@@ -239,9 +253,10 @@ def repair_desktop(
             if cwd:
                 desktop_cwd = _desktop_visible_path(cwd)
                 workspace_root = _desktop_visible_path(nearest_existing_parent(desktop_cwd) or desktop_cwd)
+                if workspace_root:
+                    thread_workspace_hints[session_id] = workspace_root
                 if workspace_root.lower().startswith(str(paths.code_dir).lower()):
                     visible_thread_ids.append(session_id)
-                    thread_workspace_hints[session_id] = str(paths.code_dir)
                 thread_permissions[session_id] = _workspace_write_permission(workspace_root)
 
         entries.append(
@@ -267,7 +282,16 @@ def repair_desktop(
             }
         )
 
+    entries_scanned_count = len(entries)
     entries.sort(key=lambda item: (iso_to_epoch(item["updated_at"]), item["id"]), reverse=True)
+    unique_entries: list[dict] = []
+    seen_entry_ids: set[str] = set()
+    for entry in entries:
+        if entry["id"] in seen_entry_ids:
+            continue
+        unique_entries.append(entry)
+        seen_entry_ids.add(entry["id"])
+    entries = unique_entries
 
     if not dry_run:
         backup_file(paths.code_dir, backup_root, backed_up, paths.index_file, enabled=True)
@@ -285,7 +309,8 @@ def repair_desktop(
     # Hold the state.json lock for the entire read-modify-write so concurrent
     # ensure_desktop_workspace_root() (or other repair runs) cannot clobber
     # the workspace-roots merge we are about to compute.
-    with file_lock(state_lock_path):
+    state_context = nullcontext() if dry_run else file_lock(state_lock_path)
+    with state_context:
         try:
             state_data = json.loads(paths.state_file.read_text(encoding="utf-8")) if paths.state_file.exists() else {}
         except (OSError, json.JSONDecodeError) as exc:
@@ -417,7 +442,7 @@ def repair_desktop(
         dry_run=dry_run,
         include_cli=include_cli,
         retag_provider=retag_provider,
-        entries_scanned=len(entries),
+        entries_scanned=entries_scanned_count,
         desktop_retagged=desktop_retagged,
         cli_converted=cli_converted,
         skipped_sessions=skipped_sessions,

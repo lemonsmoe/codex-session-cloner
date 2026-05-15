@@ -19,7 +19,9 @@ from .presenters.reports import (
     print_export_result,
     print_import_result,
     print_repair_result,
+    print_restore_backup_result,
     print_session_rows,
+    print_switch_result,
     print_validation_report,
 )
 from .services.browse import get_bundle_summaries, get_session_summaries, validate_bundles
@@ -28,6 +30,7 @@ from .services.dedupe import dedupe_clones
 from .services.exporting import export_active_desktop_all, export_cli_all, export_desktop_all, export_session
 from .services.importing import import_desktop_all, import_session
 from .services.repair import repair_desktop
+from .services.switching import restore_repair_backup, switch_provider
 from .support import build_single_export_root
 
 
@@ -123,6 +126,15 @@ def create_parser() -> argparse.ArgumentParser:
     repair_parser.add_argument("--include-cli", action="store_true")
     repair_parser.add_argument("--retag-provider", action="store_true", help="Rewrite Desktop session files to the target provider")
 
+    switch_parser = subparsers.add_parser("switch-provider", help="Retag Desktop sessions in-place to the target provider")
+    switch_parser.add_argument("target_provider", nargs="?", default="", help="Optional provider override")
+    switch_parser.add_argument("--dry-run", action="store_true")
+    switch_parser.add_argument("--include-cli", action="store_true")
+
+    restore_parser = subparsers.add_parser("restore-backup", help="Restore files from a repair/switch backup directory")
+    restore_parser.add_argument("backup_root")
+    restore_parser.add_argument("--dry-run", action="store_true")
+
     return parser
 
 
@@ -202,6 +214,19 @@ def run_cli(argv: Sequence[str], *, paths: Optional[CodexPaths] = None) -> int:
                 include_cli=args.include_cli,
                 retag_provider=args.retag_provider,
             )
+        )
+    if args.command == "switch-provider":
+        return print_switch_result(
+            switch_provider(
+                paths,
+                target_provider=args.target_provider,
+                dry_run=args.dry_run,
+                include_cli=args.include_cli,
+            )
+        )
+    if args.command == "restore-backup":
+        return print_restore_backup_result(
+            restore_repair_backup(paths, args.backup_root, dry_run=args.dry_run)
         )
 
     raise ToolkitError(f"Unknown command: {args.command}")

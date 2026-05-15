@@ -133,9 +133,13 @@ def clone_session_file(
         return CloneFileResult("skipped_exists", "Target file collision")
 
     output_lines = []
-    for idx, (raw, _) in enumerate(records):
+    for idx, (raw, obj) in enumerate(records):
         if idx == meta_index:
             output_lines.append(json.dumps(session_meta, ensure_ascii=False, separators=(",", ":")) + "\n")
+        elif obj and obj.get("type") == "session_meta":
+            embedded_meta = dict(obj)
+            embedded_meta["type"] = "session_meta_embedded"
+            output_lines.append(json.dumps(embedded_meta, ensure_ascii=False, separators=(",", ":")) + "\n")
         else:
             output_lines.append(raw)
 

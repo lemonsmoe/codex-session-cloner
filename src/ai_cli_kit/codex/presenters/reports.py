@@ -15,7 +15,9 @@ from ..models import (
     ExportResult,
     ImportResult,
     RepairResult,
+    RestoreBackupResult,
     SessionSummary,
+    SwitchResult,
     ValidationReport,
 )
 
@@ -258,3 +260,42 @@ def print_repair_result(result: RepairResult) -> int:
         for warning in result.warnings:
             print(warning, file=sys.stderr)
     return 0
+
+
+def print_switch_result(result: SwitchResult) -> int:
+    print(f"Target model provider: {result.provider}")
+    print(f"Dry run: {'yes' if result.dry_run else 'no'}")
+    print(f"Retagged session files: {result.repair_result.desktop_retagged}")
+    print(f"CLI session files converted: {result.repair_result.cli_converted}")
+    print(f"Valid session files scanned: {result.repair_result.entries_scanned}")
+    print(f"Desktop thread rows upserted: {result.repair_result.threads_updated}")
+    print(f"Thread workspace hints registered: {result.repair_result.workspace_hints_count}")
+    if result.repair_result.backup_root is not None:
+        print(f"Backup directory: {result.repair_result.backup_root}")
+    if result.repair_result.changed_sessions:
+        print("Changed session files:")
+        for path_str in result.repair_result.changed_sessions[:20]:
+            print(path_str)
+        if len(result.repair_result.changed_sessions) > 20:
+            print(f"... and {len(result.repair_result.changed_sessions) - 20} more")
+    if result.repair_result.warnings:
+        print("Warnings:", file=sys.stderr)
+        for warning in result.repair_result.warnings:
+            print(warning, file=sys.stderr)
+    return 0
+
+
+def print_restore_backup_result(result: RestoreBackupResult) -> int:
+    print(f"Backup directory: {result.backup_root}")
+    print(f"Dry run: {'yes' if result.dry_run else 'no'}")
+    print(f"Files found: {result.files_found}")
+    action = "Would restore" if result.dry_run else "Restored"
+    for path in result.files_restored[:30]:
+        print(f"{action}: {path}")
+    if len(result.files_restored) > 30:
+        print(f"... and {len(result.files_restored) - 30} more")
+    if result.errors:
+        print("Errors:", file=sys.stderr)
+        for path, reason in result.errors:
+            print(f"{path}: {reason}", file=sys.stderr)
+    return 1 if result.errors else 0

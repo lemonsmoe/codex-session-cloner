@@ -61,7 +61,7 @@ def _session_catalog(paths: CodexPaths, *, active_only: bool) -> tuple[int, dict
             if obj.get("type") != "session_meta":
                 continue
             candidate = obj.get("payload")
-            if isinstance(candidate, dict):
+            if payload is None and isinstance(candidate, dict):
                 payload = dict(candidate)
 
         if payload is None:
@@ -165,16 +165,16 @@ def _representative_key(
 
 
 def _lineage_duplicate_pairs(catalog: dict[str, _SessionRecord]) -> list[tuple[Path, Path, str]]:
-    root_cache: dict[str, str] = {}
     depth_cache: dict[str, int] = {}
-    lineages: dict[str, list[_SessionRecord]] = {}
+    duplicate_groups: dict[tuple[str, str], list[_SessionRecord]] = {}
 
     for record in catalog.values():
-        root_id = _root_of(record.session_id, catalog, root_cache)
-        lineages.setdefault(root_id, []).append(record)
+        if not record.cloned_from:
+            continue
+        duplicate_groups.setdefault((record.cloned_from, record.model_provider), []).append(record)
 
     duplicate_pairs: list[tuple[Path, Path, str]] = []
-    for records in lineages.values():
+    for records in duplicate_groups.values():
         if len(records) <= 1:
             continue
         representative = max(records, key=lambda record: _representative_key(record, catalog, depth_cache))
@@ -183,7 +183,7 @@ def _lineage_duplicate_pairs(catalog: dict[str, _SessionRecord]) -> list[tuple[P
             key=lambda record: _representative_key(record, catalog, depth_cache),
             reverse=True,
         ):
-            duplicate_pairs.append((duplicate.path, representative.path, "lineage_keep_latest_representative"))
+            duplicate_pairs.append((duplicate.path, representative.path, "same_source_provider_keep_latest_clone"))
 
     duplicate_pairs.sort(key=lambda pair: (str(pair[1]), str(pair[0])))
     return duplicate_pairs
@@ -205,10 +205,20 @@ def _prune_state_file(state_file: Path, deleted_session_ids: set[str]) -> None:
             return mapping
         return {key: value for key, value in mapping.items() if key not in deleted_session_ids}
 
+    def prune_string_list(values: object) -> object:
+        if not isinstance(values, list):
+            return values
+        return [value for value in values if not (isinstance(value, str) and value in deleted_session_ids)]
+
     data["thread-workspace-root-hints"] = prune_mapping(data.get("thread-workspace-root-hints"))
+    data["projectless-thread-ids"] = prune_string_list(data.get("projectless-thread-ids"))
     atom_state = data.get("electron-persisted-atom-state", {})
     if isinstance(atom_state, dict):
         atom_state["thread-workspace-root-hints"] = prune_mapping(atom_state.get("thread-workspace-root-hints"))
+        atom_state["projectless-thread-ids"] = prune_string_list(atom_state.get("projectless-thread-ids"))
+        atom_state["heartbeat-thread-permissions-by-id"] = prune_mapping(
+            atom_state.get("heartbeat-thread-permissions-by-id")
+        )
         thread_titles = atom_state.get("thread-titles")
         if isinstance(thread_titles, dict):
             thread_titles["titles"] = prune_mapping(thread_titles.get("titles"))
@@ -216,6 +226,7 @@ def _prune_state_file(state_file: Path, deleted_session_ids: set[str]) -> None:
     try:
         with atomic_write(state_file) as fh:
             fh.write(json.dumps(data, ensure_ascii=False, separators=(",", ":")))
+            fh.write("\n")
     except OSError:
         return
 
@@ -292,8 +303,13 @@ def dedupe_clones(
 
     deleted_session_id_set = set(deleted_session_ids)
     if deleted_session_id_set:
+        backup_file(paths.code_dir, backup_root, backed_up, paths.index_file, enabled=paths.index_file.exists())
+        state_db = paths.latest_state_db()
+        if state_db is not None:
+            backup_file(paths.code_dir, backup_root, backed_up, state_db, enabled=state_db.exists())
+        backup_file(paths.code_dir, backup_root, backed_up, paths.state_file, enabled=paths.state_file.exists())
         remove_session_index_entries(paths.index_file, deleted_session_id_set)
-        _delete_threads_rows(paths.latest_state_db(), deleted_session_id_set)
+        _delete_threads_rows(state_db, deleted_session_id_set)
         _prune_state_file(paths.state_file, deleted_session_id_set)
 
     return DedupeResult(

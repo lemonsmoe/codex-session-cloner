@@ -103,6 +103,7 @@ def prepare_session_for_import(
     # with the existing target_session in importing.py (read_bytes-based diff).
     with source_session.open("r", encoding="utf-8", newline="") as in_fh, \
             prepared_session.open("w", encoding="utf-8", newline="") as out_fh:
+        saw_session_meta = False
         for raw in in_fh:
             line = raw.rstrip("\n")
             if not line:
@@ -116,6 +117,12 @@ def prepare_session_for_import(
                 continue
 
             if obj.get("type") == "session_meta" and isinstance(obj.get("payload"), dict):
+                if saw_session_meta:
+                    obj = dict(obj)
+                    obj["type"] = "session_meta_embedded"
+                    out_fh.write(json.dumps(obj, ensure_ascii=False, separators=(",", ":")) + "\n")
+                    continue
+                saw_session_meta = True
                 payload = dict(obj["payload"])
                 if auto_desktop_compat and session_kind == "cli":
                     payload["source"] = "vscode"
@@ -126,6 +133,8 @@ def prepare_session_for_import(
                 obj = dict(obj)
                 obj["payload"] = payload
                 out_fh.write(json.dumps(obj, ensure_ascii=False, separators=(",", ":")) + "\n")
+                auto_desktop_compat = False
+                target_desktop_model_provider = ""
                 continue
 
             out_fh.write(raw)
@@ -165,7 +174,7 @@ def upsert_threads_table(
             timestamp = obj.get("timestamp")
             if isinstance(timestamp, str) and timestamp:
                 last_timestamp = timestamp
-            if obj.get("type") == "session_meta" and isinstance(obj.get("payload"), dict):
+            if obj.get("type") == "session_meta" and not meta and isinstance(obj.get("payload"), dict):
                 meta = obj.get("payload", {})
             elif obj.get("type") == "turn_context" and not turn_context and isinstance(obj.get("payload"), dict):
                 turn_context = obj.get("payload", {})

@@ -64,8 +64,6 @@ def _provider_from_openai_official(
     paths: CodexPaths,
     data: dict[str, Any],
     text: str,
-    *,
-    require_chatgpt_auth: bool = False,
 ) -> str:
     marketplaces = data.get("marketplaces")
     mentions_openai_bundle = isinstance(marketplaces, dict) and "openai-bundled" in marketplaces
@@ -86,10 +84,6 @@ def _provider_from_openai_official(
         _nonempty_str(tokens.get(key)) for key in ("id_token", "access_token", "refresh_token")
     )
     if auth_mode == "chatgpt" and has_chatgpt_tokens:
-        return OPENAI_OFFICIAL_PROVIDER
-    if require_chatgpt_auth:
-        return ""
-    if _nonempty_str(auth_data.get("OPENAI_API_KEY")):
         return OPENAI_OFFICIAL_PROVIDER
     return ""
 
@@ -156,23 +150,18 @@ def detect_provider(paths: CodexPaths, explicit: str = "") -> str:
     data = _load_toml_data(config_file)
     text = config_file.read_text(encoding="utf-8")
     config_provider = _nonempty_str(data.get("model_provider"))
-    official_provider = _provider_from_openai_official(paths, data, text, require_chatgpt_auth=True)
-    if official_provider:
-        return official_provider
-
     if config_provider:
         return config_provider
 
-    text = config_file.read_text(encoding="utf-8")
     provider = _provider_from_text(text)
     if provider:
         return provider
 
-    provider = _provider_from_declared_models(data)
-    if provider:
-        return provider
+    official_provider = _provider_from_openai_official(paths, data, text)
+    if official_provider:
+        return official_provider
 
-    provider = _provider_from_openai_official(paths, data, text)
+    provider = _provider_from_declared_models(data)
     if provider:
         return provider
 

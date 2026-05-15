@@ -125,6 +125,8 @@ TUI_ACTION_NOTES = {
     "export_cli_all": ["默认归档到 ./codex_sessions/<machine>/cli/<timestamp>/。", "范围包含 active + archived 的 CLI 会话，并分别生成 Bundle。"],
     "import_one": ["从 Bundle 列表中选择要导入为会话的条目。", "可先按导出机器和导出方式筛选。", "导入时会顺手修复 history / index / Desktop 元数据。"],
     "import_desktop_all": ["先选择设备文件夹，再选择该设备下的分类文件夹，然后批量导入。", "分类文件夹会显示为 desktop / active / cli / single。", "可选：自动创建缺失工作目录。"],
+    "switch_provider": ["原地把 Desktop 会话切换到当前 provider，不创建 clone。", "执行前会备份受影响的 session / index / state 文件。"],
+    "restore_backup": ["从 repair_backups 下的备份目录恢复文件。", "建议先使用 dry-run 或确认备份目录来自最近一次 switch/repair。"],
     "repair_desktop": ["对齐 provider、重建 session_index、补 threads 表与工作区根目录。"],
     "repair_desktop_dry": ["只预览将修改哪些会话和索引，不真正写入。"],
     "repair_desktop_cli": ["会把旧 CLI 线程改写成 Desktop 兼容元数据。"],
@@ -161,14 +163,16 @@ def build_tui_menu_actions() -> List[TuiMenuAction]:
         TuiMenuAction("export_cli_all", "c", "批量导出全部 CLI 会话为 Bundle", "bundle", ("export-cli-all",)),
         TuiMenuAction("import_one", "i", "导入单个 Bundle 为会话", "bundle", ("import", "<session_id|bundle_dir>")),
         TuiMenuAction("import_desktop_all", "m", "批量导入 Bundle 为会话", "bundle", ("import-desktop-all",)),
-        TuiMenuAction("clone", "1", "克隆到当前 provider", "repair", ("clone-provider",)),
-        TuiMenuAction("clone_dry", "2", "模拟克隆（Dry-run）", "repair", ("clone-provider", "--dry-run"), is_dry_run=True),
-        TuiMenuAction("clean", "3", "清理旧版无标记副本", "repair", ("clean-clones",), is_dangerous=True),
-        TuiMenuAction("clean_dry", "4", "模拟清理旧版副本", "repair", ("clean-clones", "--dry-run"), is_dangerous=True, is_dry_run=True),
-        TuiMenuAction("dedupe", "5", "清理重复谱系（保留最新代表）", "repair", ("dedupe-clones",), is_dangerous=True),
-        TuiMenuAction("dedupe_dry", "6", "模拟清理重复谱系", "repair", ("dedupe-clones", "--dry-run"), is_dangerous=True, is_dry_run=True),
-        TuiMenuAction("repair_desktop", "r", "修复 Desktop 可见性", "repair", ("repair-desktop",)),
-        TuiMenuAction("repair_desktop_dry", "v", "模拟修复 Desktop", "repair", ("repair-desktop", "--dry-run"), is_dry_run=True),
+        TuiMenuAction("switch_provider", "1", "切换到当前 provider（原地迁移）", "repair", ("switch-provider",)),
+        TuiMenuAction("restore_backup", "2", "从备份恢复", "repair", ("restore-backup", "<backup_dir>")),
+        TuiMenuAction("repair_desktop", "3", "修复 Desktop 可见性", "repair", ("repair-desktop",)),
+        TuiMenuAction("repair_desktop_dry", "4", "模拟修复 Desktop", "repair", ("repair-desktop", "--dry-run"), is_dry_run=True),
+        TuiMenuAction("clone", "5", "克隆到当前 provider", "repair", ("clone-provider",)),
+        TuiMenuAction("clone_dry", "6", "模拟克隆（Dry-run）", "repair", ("clone-provider", "--dry-run"), is_dry_run=True),
+        TuiMenuAction("clean", "7", "清理旧版无标记副本", "repair", ("clean-clones",), is_dangerous=True),
+        TuiMenuAction("clean_dry", "8", "模拟清理旧版副本", "repair", ("clean-clones", "--dry-run"), is_dangerous=True, is_dry_run=True),
+        TuiMenuAction("dedupe", "9", "清理重复谱系（保留最新代表）", "repair", ("dedupe-clones",), is_dangerous=True),
+        TuiMenuAction("dedupe_dry", "d", "模拟清理重复谱系", "repair", ("dedupe-clones", "--dry-run"), is_dangerous=True, is_dry_run=True),
         TuiMenuAction("repair_desktop_cli", "x", "修复并纳入 CLI 线程", "repair", ("repair-desktop", "--include-cli")),
         TuiMenuAction("repair_desktop_cli_dry", "g", "模拟修复并纳入 CLI", "repair", ("repair-desktop", "--include-cli", "--dry-run"), is_dry_run=True),
         TuiMenuAction("exit", "0", "退出", "system", tuple()),
@@ -1308,6 +1312,21 @@ class ToolkitTuiApp:
                 action_name += "（自动创建目录）"
             return action_name, args
 
+        if menu_action.action_id == "restore_backup":
+            backup_dir = self._prompt_value(
+                title="从备份恢复",
+                prompt_label="输入备份目录路径",
+                help_lines=[
+                    "输入 C:\\Users\\22796\\.codex\\repair_backups 下的某个备份目录。",
+                    "例如：C:\\Users\\22796\\.codex\\repair_backups\\visibility-20260515-033517",
+                    "恢复前会再备份当前目标文件，便于撤销恢复操作。",
+                ],
+                allow_empty=False,
+            )
+            if not backup_dir:
+                return None, None
+            return f"从备份恢复 {backup_dir}", ["restore-backup", backup_dir]
+
         return action_name, cli_args
 
     def _tui_help_text(self) -> None:
@@ -1316,9 +1335,11 @@ class ToolkitTuiApp:
             style_text("菜单分组：", Ansi.BOLD),
             "  Session / Browse   : 浏览本机会话、查看详情、导出单个会话为 Bundle",
             "  Bundle / Transfer  : 浏览 Bundle、校验 Bundle、批量导出与批量导入",
-            "  Repair / Maintenance : provider clone、旧副本清理、Desktop/CLI 修复",
+            "  Repair / Maintenance : provider 切换、备份恢复、Desktop/CLI 修复、clone/清理",
             "",
             style_text("常用 CLI（更完整的工具链能力）：", Ansi.BOLD),
+            "  switch-provider               原地切换 Desktop 会话到当前 provider",
+            "  restore-backup <backup_dir>   从 repair/switch 备份目录恢复",
             "  clone-provider                克隆活动会话到当前 provider",
             "  clean-clones                  清理旧版无标记副本",
             "  list [pattern]                列出本机会话",
@@ -1339,6 +1360,8 @@ class ToolkitTuiApp:
             "",
             style_text("示例：", Ansi.BOLD),
             f"  {self._cli_preview(('clone-provider', '--dry-run'))}",
+            f"  {self._cli_preview(('switch-provider', '--dry-run'))}",
+            f"  {self._cli_preview(('restore-backup', 'C:\\\\Users\\\\22796\\\\.codex\\\\repair_backups\\\\visibility-xxxx', '--dry-run'))}",
             f"  {self._cli_preview(('list-bundles', '--source', 'desktop'))}",
             f"  {self._cli_preview(('validate-bundles', '--source', 'desktop'))}",
             f"  {self._cli_preview(('export-cli-all', '--dry-run'))}",

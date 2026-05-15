@@ -175,3 +175,19 @@ class RepairResult:
     backup_root: Optional[Path]
     changed_sessions: List[str]
     warnings: List[str]
+
+
+@dataclass(frozen=True)
+class SwitchResult:
+    provider: str
+    dry_run: bool
+    repair_result: RepairResult
+
+
+@dataclass(frozen=True)
+class RestoreBackupResult:
+    backup_root: Path
+    dry_run: bool
+    files_found: int
+    files_restored: List[Path] = field(default_factory=list)
+    errors: List[Tuple[Path, str]] = field(default_factory=list)

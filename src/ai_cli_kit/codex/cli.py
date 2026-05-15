@@ -55,6 +55,8 @@ CLI_SUBCOMMANDS = {
     "import",
     "import-desktop-all",
     "repair-desktop",
+    "restore-backup",
+    "switch-provider",
 }
 
 
@@ -78,6 +80,8 @@ def create_arg_parser() -> argparse.ArgumentParser:
             "  import                Import one bundle\n"
             "  import-desktop-all    Batch import one machine/category folder\n"
             "  repair-desktop        Repair Desktop visibility/index/provider\n\n"
+            "  switch-provider        Retag Desktop sessions in-place to a provider\n"
+            "  restore-backup         Restore files from a repair/switch backup\n\n"
             "Legacy flags still work:\n"
             "  --dry-run             Preview clone mode\n"
             "  --clean               Cleanup legacy clone files\n"
