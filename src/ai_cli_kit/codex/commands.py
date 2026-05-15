@@ -18,6 +18,7 @@ from .presenters.reports import (
     print_dedupe_result,
     print_export_result,
     print_import_result,
+    print_promote_session_result,
     print_repair_result,
     print_restore_backup_result,
     print_session_rows,
@@ -29,6 +30,7 @@ from .services.clone import cleanup_clones, clone_to_provider
 from .services.dedupe import dedupe_clones
 from .services.exporting import export_active_desktop_all, export_cli_all, export_desktop_all, export_session
 from .services.importing import import_desktop_all, import_session
+from .services.promote import promote_session
 from .services.repair import repair_desktop
 from .services.switching import restore_repair_backup, switch_provider
 from .support import build_single_export_root
@@ -126,6 +128,11 @@ def create_parser() -> argparse.ArgumentParser:
     repair_parser.add_argument("--include-cli", action="store_true")
     repair_parser.add_argument("--retag-provider", action="store_true", help="Rewrite Desktop session files to the target provider")
 
+    promote_parser = subparsers.add_parser("promote-session", help="Force one session into Desktop visibility state")
+    promote_parser.add_argument("session_id")
+    promote_parser.add_argument("target_provider", nargs="?", default="", help="Optional provider override")
+    promote_parser.add_argument("--dry-run", action="store_true")
+
     switch_parser = subparsers.add_parser("switch-provider", help="Retag Desktop sessions in-place to the target provider")
     switch_parser.add_argument("target_provider", nargs="?", default="", help="Optional provider override")
     switch_parser.add_argument("--dry-run", action="store_true")
@@ -213,6 +220,15 @@ def run_cli(argv: Sequence[str], *, paths: Optional[CodexPaths] = None) -> int:
                 dry_run=args.dry_run,
                 include_cli=args.include_cli,
                 retag_provider=args.retag_provider,
+            )
+        )
+    if args.command == "promote-session":
+        return print_promote_session_result(
+            promote_session(
+                paths,
+                args.session_id,
+                target_provider=args.target_provider,
+                dry_run=args.dry_run,
             )
         )
     if args.command == "switch-provider":

@@ -54,6 +54,7 @@ CLI_SUBCOMMANDS = {
     "export-cli-all",
     "import",
     "import-desktop-all",
+    "promote-session",
     "repair-desktop",
     "restore-backup",
     "switch-provider",
@@ -79,6 +80,7 @@ def create_arg_parser() -> argparse.ArgumentParser:
             "  export-cli-all        Batch export all CLI sessions\n"
             "  import                Import one bundle\n"
             "  import-desktop-all    Batch import one machine/category folder\n"
+            "  promote-session       Force one session into Desktop visibility state\n"
             "  repair-desktop        Repair Desktop visibility/index/provider\n\n"
             "  switch-provider        Retag Desktop sessions in-place to a provider\n"
             "  restore-backup         Restore files from a repair/switch backup\n\n"

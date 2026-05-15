@@ -83,6 +83,22 @@ class DedupeResult:
 
 
 @dataclass(frozen=True)
+class PromoteSessionResult:
+    provider: str
+    session_id: str
+    dry_run: bool
+    session_file: Path
+    index_upserted: bool
+    thread_upserted: bool
+    state_updated: bool
+    retagged: bool = False
+    converted_to_desktop: bool = False
+    workspace_root: str = ""
+    backup_root: Optional[Path] = None
+    warnings: List[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
 class ValidationReport:
     source_group: str
     results: List[BundleValidationResult]

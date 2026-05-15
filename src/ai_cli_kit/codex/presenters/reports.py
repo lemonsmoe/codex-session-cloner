@@ -14,6 +14,7 @@ from ..models import (
     DedupeResult,
     ExportResult,
     ImportResult,
+    PromoteSessionResult,
     RepairResult,
     RestoreBackupResult,
     SessionSummary,
@@ -143,6 +144,24 @@ def print_dedupe_result(result: DedupeResult) -> int:
         for path, reason in result.errors:
             print(f"{path}: {reason}", file=sys.stderr)
     return 1 if result.errors else 0
+
+
+def print_promote_session_result(result: PromoteSessionResult) -> int:
+    print(f"Target Provider: {result.provider}")
+    print(f"Session id: {result.session_id}")
+    print(f"Dry run: {'yes' if result.dry_run else 'no'}")
+    print(f"Session file: {result.session_file}")
+    print(f"Index upserted: {'yes' if result.index_upserted else 'no'}")
+    print(f"Threads table upserted: {'yes' if result.thread_upserted else 'no'}")
+    print(f"Desktop state updated: {'yes' if result.state_updated else 'no'}")
+    print(f"Retagged provider: {'yes' if result.retagged else 'no'}")
+    print(f"Converted to Desktop metadata: {'yes' if result.converted_to_desktop else 'no'}")
+    print(f"Workspace root: {result.workspace_root or '-'}")
+    if result.backup_root is not None:
+        print(f"Backup directory: {result.backup_root}")
+    for warning in result.warnings:
+        print(warning, file=sys.stderr)
+    return 0
 
 
 def print_export_result(result: ExportResult) -> int:

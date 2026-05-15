@@ -129,6 +129,7 @@ TUI_ACTION_NOTES = {
     "restore_backup": ["从 repair_backups 下的备份目录恢复文件。", "建议先使用 dry-run 或确认备份目录来自最近一次 switch/repair。"],
     "repair_desktop": ["对齐 provider、重建 session_index、补 threads 表与工作区根目录。"],
     "repair_desktop_dry": ["只预览将修改哪些会话和索引，不真正写入。"],
+    "promote_session": ["输入一个 session id，强制补齐它的 index / threads / workspace 可见性。"],
     "repair_desktop_cli": ["会把旧 CLI 线程改写成 Desktop 兼容元数据。"],
     "repair_desktop_cli_dry": ["预览哪些 CLI 线程会被纳入 Desktop 视图。"],
     "exit": ["退出工具箱。"],
@@ -167,12 +168,13 @@ def build_tui_menu_actions() -> List[TuiMenuAction]:
         TuiMenuAction("restore_backup", "2", "从备份恢复", "repair", ("restore-backup", "<backup_dir>")),
         TuiMenuAction("repair_desktop", "3", "修复 Desktop 可见性", "repair", ("repair-desktop",)),
         TuiMenuAction("repair_desktop_dry", "4", "模拟修复 Desktop", "repair", ("repair-desktop", "--dry-run"), is_dry_run=True),
-        TuiMenuAction("clone", "5", "克隆到当前 provider", "repair", ("clone-provider",)),
-        TuiMenuAction("clone_dry", "6", "模拟克隆（Dry-run）", "repair", ("clone-provider", "--dry-run"), is_dry_run=True),
-        TuiMenuAction("clean", "7", "清理旧版无标记副本", "repair", ("clean-clones",), is_dangerous=True),
-        TuiMenuAction("clean_dry", "8", "模拟清理旧版副本", "repair", ("clean-clones", "--dry-run"), is_dangerous=True, is_dry_run=True),
-        TuiMenuAction("dedupe", "9", "清理重复谱系（保留最新代表）", "repair", ("dedupe-clones",), is_dangerous=True),
-        TuiMenuAction("dedupe_dry", "d", "模拟清理重复谱系", "repair", ("dedupe-clones", "--dry-run"), is_dangerous=True, is_dry_run=True),
+        TuiMenuAction("dedupe", "5", "清理重复谱系（内容安全去重）", "repair", ("dedupe-clones",), is_dangerous=True),
+        TuiMenuAction("dedupe_dry", "6", "模拟清理重复谱系", "repair", ("dedupe-clones", "--dry-run"), is_dangerous=True, is_dry_run=True),
+        TuiMenuAction("promote_session", "7", "修复指定对话可见性", "repair", ("promote-session", "<session_id>")),
+        TuiMenuAction("clone", "8", "克隆到当前 provider", "repair", ("clone-provider",)),
+        TuiMenuAction("clone_dry", "9", "模拟克隆（Dry-run）", "repair", ("clone-provider", "--dry-run"), is_dry_run=True),
+        TuiMenuAction("clean", "d", "清理旧版无标记副本", "repair", ("clean-clones",), is_dangerous=True),
+        TuiMenuAction("clean_dry", "n", "模拟清理旧版副本", "repair", ("clean-clones", "--dry-run"), is_dangerous=True, is_dry_run=True),
         TuiMenuAction("repair_desktop_cli", "x", "修复并纳入 CLI 线程", "repair", ("repair-desktop", "--include-cli")),
         TuiMenuAction("repair_desktop_cli_dry", "g", "模拟修复并纳入 CLI", "repair", ("repair-desktop", "--include-cli", "--dry-run"), is_dry_run=True),
         TuiMenuAction("exit", "0", "退出", "system", tuple()),
@@ -1327,6 +1329,21 @@ class ToolkitTuiApp:
                 return None, None
             return f"从备份恢复 {backup_dir}", ["restore-backup", backup_dir]
 
+        if menu_action.action_id == "promote_session":
+            session_id = self._prompt_value(
+                title="修复指定对话可见性",
+                prompt_label="输入 session id",
+                help_lines=[
+                    "会强制补齐该 session 的 session_index、threads 表、workspace hints 与权限。",
+                    "适合处理单个对话文件存在但 Desktop 侧边栏不显示的问题。",
+                    "建议先确认 session id 来自 list 或当前对话文件名。",
+                ],
+                allow_empty=False,
+            )
+            if not session_id:
+                return None, None
+            return f"修复指定对话可见性 {session_id}", ["promote-session", session_id]
+
         return action_name, cli_args
 
     def _tui_help_text(self) -> None:
@@ -1340,6 +1357,7 @@ class ToolkitTuiApp:
             style_text("常用 CLI（更完整的工具链能力）：", Ansi.BOLD),
             "  switch-provider               原地切换 Desktop 会话到当前 provider",
             "  restore-backup <backup_dir>   从 repair/switch 备份目录恢复",
+            "  promote-session <session_id>  修复指定对话的 Desktop 可见性",
             "  clone-provider                克隆活动会话到当前 provider",
             "  clean-clones                  清理旧版无标记副本",
             "  list [pattern]                列出本机会话",

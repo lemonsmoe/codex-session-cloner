@@ -29,6 +29,18 @@ class _SessionRecord:
     last_activity: float
 
 
+_SCRUB_META_KEYS = {
+    "id",
+    "session_id",
+    "thread_id",
+    "model_provider",
+    "cloned_from",
+    "original_provider",
+    "timestamp",
+    "clone_timestamp",
+}
+
+
 def _timestamp_score(value: object, fallback: float) -> float:
     parsed = parse_codex_timestamp(value if isinstance(value, str) else None)
     if parsed is None:
@@ -164,14 +176,60 @@ def _representative_key(
     )
 
 
+def _scrub_session_meta_payload(value: object) -> object:
+    if isinstance(value, dict):
+        return {
+            key: _scrub_session_meta_payload(item)
+            for key, item in sorted(value.items())
+            if key not in _SCRUB_META_KEYS
+        }
+    if isinstance(value, list):
+        return [_scrub_session_meta_payload(item) for item in value]
+    return value
+
+
+def _canonical_record(obj: dict) -> str:
+    candidate = dict(obj)
+    if candidate.get("type") in {"session_meta", "session_meta_embedded"}:
+        candidate.pop("timestamp", None)
+        payload = candidate.get("payload")
+        if isinstance(payload, dict):
+            candidate["payload"] = _scrub_session_meta_payload(payload)
+    return json.dumps(candidate, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _canonical_session_records(path: Path) -> list[str]:
+    records: list[str] = []
+    for _, obj in parse_jsonl_records(path):
+        if isinstance(obj, dict):
+            records.append(_canonical_record(obj))
+    return records
+
+
+def _content_duplicate_reason(candidate: _SessionRecord, representative: _SessionRecord) -> str:
+    try:
+        candidate_records = _canonical_session_records(candidate.path)
+        representative_records = _canonical_session_records(representative.path)
+    except Exception:
+        return ""
+
+    if not candidate_records or not representative_records:
+        return ""
+    if candidate_records == representative_records:
+        return "same_content_keep_latest_representative"
+    if len(candidate_records) <= len(representative_records) and representative_records[: len(candidate_records)] == candidate_records:
+        return "prefix_content_keep_latest_representative"
+    return ""
+
+
 def _lineage_duplicate_pairs(catalog: dict[str, _SessionRecord]) -> list[tuple[Path, Path, str]]:
+    root_cache: dict[str, str] = {}
     depth_cache: dict[str, int] = {}
-    duplicate_groups: dict[tuple[str, str], list[_SessionRecord]] = {}
+    duplicate_groups: dict[str, list[_SessionRecord]] = {}
 
     for record in catalog.values():
-        if not record.cloned_from:
-            continue
-        duplicate_groups.setdefault((record.cloned_from, record.model_provider), []).append(record)
+        root_id = _root_of(record.session_id, catalog, root_cache)
+        duplicate_groups.setdefault(root_id, []).append(record)
 
     duplicate_pairs: list[tuple[Path, Path, str]] = []
     for records in duplicate_groups.values():
@@ -183,7 +241,9 @@ def _lineage_duplicate_pairs(catalog: dict[str, _SessionRecord]) -> list[tuple[P
             key=lambda record: _representative_key(record, catalog, depth_cache),
             reverse=True,
         ):
-            duplicate_pairs.append((duplicate.path, representative.path, "same_source_provider_keep_latest_clone"))
+            reason = _content_duplicate_reason(duplicate, representative)
+            if reason:
+                duplicate_pairs.append((duplicate.path, representative.path, reason))
 
     duplicate_pairs.sort(key=lambda pair: (str(pair[1]), str(pair[0])))
     return duplicate_pairs

@@ -23,6 +23,7 @@ from ai_cli_kit.codex.services.clone import build_clone_index, clone_to_provider
 from ai_cli_kit.codex.services.dedupe import dedupe_clones  # noqa: E402
 from ai_cli_kit.codex.services.exporting import export_active_desktop_all, export_session  # noqa: E402
 from ai_cli_kit.codex.services.importing import import_desktop_all, import_session  # noqa: E402
+from ai_cli_kit.codex.services.promote import promote_session  # noqa: E402
 from ai_cli_kit.codex.services.provider import detect_provider  # noqa: E402
 from ai_cli_kit.codex.services.repair import repair_desktop  # noqa: E402
 from ai_cli_kit.codex.services.switching import restore_repair_backup, switch_provider  # noqa: E402
@@ -1019,7 +1020,7 @@ class CoreWorkflowTests(unittest.TestCase):
                 originator="Codex Desktop",
                 cwd=project_cwd,
                 archived=False,
-                user_message="修复重复 clone",
+                user_message="duplicate clone",
             )
 
             paths = CodexPaths(home=home, cwd=workspace)
@@ -1041,6 +1042,7 @@ class CoreWorkflowTests(unittest.TestCase):
                 cwd=project_cwd,
                 cloned_from=original_id,
                 timestamp="2026-04-10T11:00:00Z",
+                user_message="duplicate clone",
             )
             os.utime(clone_path, (1000, 1000))
             os.utime(duplicate_clone_path, (2000, 2000))
@@ -1057,17 +1059,16 @@ class CoreWorkflowTests(unittest.TestCase):
             state_file.write_text(json.dumps(state_data, separators=(",", ":")) + "\n", encoding="utf-8")
 
             dry_run_result = dedupe_clones(paths, target_provider="target-provider", dry_run=True)
-            self.assertEqual(len(dry_run_result.duplicate_pairs), 1)
+            self.assertEqual(len(dry_run_result.duplicate_pairs), 2)
 
             result = dedupe_clones(paths, target_provider="target-provider", dry_run=False)
-            self.assertEqual(len(result.deleted_session_ids), 1)
-            self.assertEqual(result.deleted_session_ids[0], clone_id)
-            self.assertTrue(any(original_id in str(path) for path in iter_session_files(paths, active_only=False)))
+            self.assertEqual(set(result.deleted_session_ids), {original_id, clone_id})
+            self.assertFalse(any(original_id in str(path) for path in iter_session_files(paths, active_only=False)))
             self.assertFalse(clone_path.exists())
             self.assertTrue(duplicate_clone_path.exists())
 
             index_entries = load_existing_index(home / ".codex" / "session_index.jsonl")
-            self.assertIn(original_id, index_entries)
+            self.assertNotIn(original_id, index_entries)
             self.assertNotIn(clone_id, index_entries)
             self.assertIn(duplicate_clone_id, index_entries)
 
@@ -1091,7 +1092,7 @@ class CoreWorkflowTests(unittest.TestCase):
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
 
-    def test_dedupe_clones_keeps_latest_lineage_leaf(self) -> None:
+    def test_dedupe_clones_removes_prefix_equivalent_chain(self) -> None:
         # Build A→B→C chain: B is A's clone, C is B's clone. Running dedupe should
         # keep B (chain intermediate) to avoid orphaning C's lineage; only leaf pair
         # without downstream clones qualifies.
@@ -1125,10 +1126,42 @@ class CoreWorkflowTests(unittest.TestCase):
 
             delete_paths = {str(p) for p, _, _ in result.duplicate_pairs}
             keep_paths = {str(p) for _, p, _ in result.duplicate_pairs}
+            self.assertEqual(len(result.duplicate_pairs), 2)
+            self.assertTrue(any(a_id in p for p in delete_paths))
+            self.assertTrue(any(b_id in p for p in delete_paths))
+            self.assertFalse(any(c_id in p for p in delete_paths))
+            self.assertTrue(all(c_id in p for p in keep_paths))
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def test_dedupe_clones_skips_diverged_lineage_content(self) -> None:
+        tmpdir = tempfile.mkdtemp()
+        try:
+            workspace = Path(tmpdir) / "workspace"
+            home = Path(tmpdir) / "home"
+            workspace.mkdir()
+            write_config(home, "target-provider")
+            project_cwd = workspace / "project-diverged"
+            project_cwd.mkdir()
+
+            a_id = "aaaaaaaa-2222-4000-8000-000000000001"
+            b_id = "bbbbbbbb-2222-4000-8000-000000000002"
+            c_id = "cccccccc-2222-4000-8000-000000000003"
+
+            write_session(home, a_id, provider="target-provider", source="vscode",
+                          originator="Codex Desktop", cwd=project_cwd,
+                          user_message="shared start")
+            write_session(home, b_id, provider="target-provider", source="vscode",
+                          originator="Codex Desktop", cwd=project_cwd,
+                          cloned_from=a_id, user_message="branch b unique")
+            write_session(home, c_id, provider="target-provider", source="vscode",
+                          originator="Codex Desktop", cwd=project_cwd,
+                          cloned_from=b_id, user_message="branch c unique")
+
+            paths = CodexPaths(home=home, cwd=workspace)
+            result = dedupe_clones(paths, target_provider="target-provider", dry_run=True)
+
             self.assertEqual(result.duplicate_pairs, [])
-            self.assertFalse(any(a_id in p for p in delete_paths))
-            self.assertFalse(any(b_id in p for p in delete_paths))
-            self.assertFalse(any(c_id in p for p in keep_paths))
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
 
@@ -1210,8 +1243,8 @@ class CoreWorkflowTests(unittest.TestCase):
 
             delete_paths = {str(p) for p, _, _ in result.duplicate_pairs}
             keep_paths = {str(p) for _, p, _ in result.duplicate_pairs}
-            self.assertEqual(len(result.duplicate_pairs), 1)
-            self.assertFalse(any(a_id in p for p in delete_paths))
+            self.assertEqual(len(result.duplicate_pairs), 3)
+            self.assertTrue(any(a_id in p for p in delete_paths))
             self.assertFalse(any(d_id in p for p in delete_paths))
             self.assertTrue(all(d_id in p for p in keep_paths))
         finally:
@@ -1635,6 +1668,65 @@ class CoreWorkflowTests(unittest.TestCase):
             )
             self.assertIn(str(project_cwd), state_data["electron-saved-workspace-roots"])
             self.assertNotIn(str(prefixed_cwd), state_data["electron-saved-workspace-roots"])
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def test_promote_session_repairs_one_thread_visibility(self) -> None:
+        tmpdir = tempfile.mkdtemp()
+        try:
+            workspace = Path(tmpdir) / "workspace"
+            home = Path(tmpdir) / "home"
+            workspace.mkdir()
+            write_config(home, "openai")
+            write_state_file(home)
+            create_threads_db(home)
+            project_cwd = workspace / "project-promote"
+            project_cwd.mkdir()
+
+            session_id = "aaaaaaaa-5555-4000-8000-000000000001"
+            write_session(
+                home,
+                session_id,
+                provider="right_code",
+                source="cli",
+                originator="Codex CLI",
+                cwd=project_cwd,
+                user_message="promote this one",
+            )
+
+            state_file = home / ".codex" / ".codex-global-state.json"
+            state_data = json.loads(state_file.read_text(encoding="utf-8"))
+            state_data["electron-persisted-atom-state"] = {
+                "sidebar-collapsed-groups": {str(project_cwd): True}
+            }
+            state_file.write_text(json.dumps(state_data, separators=(",", ":")) + "\n", encoding="utf-8")
+
+            paths = CodexPaths(home=home, cwd=workspace)
+            result = promote_session(paths, session_id, target_provider="openai", dry_run=False)
+
+            self.assertTrue(result.retagged)
+            self.assertTrue(result.converted_to_desktop)
+            self.assertEqual(result.workspace_root, str(project_cwd))
+
+            payload = read_session_payload(result.session_file)
+            self.assertEqual(payload["model_provider"], "openai")
+            self.assertEqual(payload["source"], "vscode")
+            self.assertEqual(payload["originator"], "Codex Desktop")
+
+            index_entries = load_existing_index(home / ".codex" / "session_index.jsonl")
+            self.assertIn(session_id, index_entries)
+
+            conn = sqlite3.connect(home / ".codex" / "state_0001.sqlite")
+            db_provider = conn.execute("select model_provider from threads where id = ?", (session_id,)).fetchone()[0]
+            conn.close()
+            self.assertEqual(db_provider, "openai")
+
+            state_data = json.loads(state_file.read_text(encoding="utf-8"))
+            atom_state = state_data["electron-persisted-atom-state"]
+            self.assertEqual(state_data["thread-workspace-root-hints"][session_id], str(project_cwd))
+            self.assertEqual(atom_state["thread-workspace-root-hints"][session_id], str(project_cwd))
+            self.assertNotIn(str(project_cwd), atom_state["sidebar-collapsed-groups"])
+            self.assertTrue(result.backup_root.is_dir())
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
 
