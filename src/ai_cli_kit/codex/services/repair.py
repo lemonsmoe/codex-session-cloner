@@ -3,18 +3,21 @@
 from __future__ import annotations
 
 import json
-import os
-import sqlite3
 from collections import OrderedDict
-from contextlib import closing, nullcontext
+from contextlib import nullcontext
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
 from ..errors import ToolkitError
 from ..models import RepairResult
 from ..paths import CodexPaths
 from ..services.provider import detect_provider
+from ..stores.desktop_state import (
+    desktop_visible_path,
+    merge_desktop_visibility_state,
+    upsert_thread_entries,
+    workspace_write_permission,
+)
 from ..stores.history import first_history_messages
 from ..stores.index import load_existing_index
 from ..stores.session_files import (
@@ -30,7 +33,6 @@ from ..support import (
     file_lock,
     iso_to_epoch,
     lock_path_for,
-    long_path,
     nearest_existing_parent,
     normalize_iso,
     prune_old_backups,
@@ -39,57 +41,6 @@ from ..support import (
 
 def _string_field(value: Any, default: str = "") -> str:
     return value if isinstance(value, str) else default
-
-
-def _sqlite_value(value: Any) -> Any:
-    if value is None or isinstance(value, (str, int, float, bytes)):
-        return value
-    if isinstance(value, (dict, list, tuple)):
-        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-    return str(value)
-
-
-def _desktop_visible_path(value: str) -> str:
-    """Strip Windows long-path prefixes before writing Desktop state JSON."""
-    if value.startswith("\\\\?\\UNC\\"):
-        return "\\\\" + value[8:]
-    if value.startswith("\\\\?\\"):
-        return value[4:]
-    return value
-
-
-def _merge_ordered_strings(existing: object, additions: list[str]) -> list[str]:
-    result = [item for item in existing if isinstance(item, str)] if isinstance(existing, list) else []
-    seen = set(result)
-    for item in additions:
-        if item and item not in seen:
-            result.append(item)
-            seen.add(item)
-    return result
-
-
-def _merge_string_mapping(existing: object, updates: dict[str, str]) -> dict[str, str]:
-    result = (
-        {key: value for key, value in existing.items() if isinstance(key, str) and isinstance(value, str)}
-        if isinstance(existing, dict)
-        else {}
-    )
-    result.update({key: value for key, value in updates.items() if key and value})
-    return result
-
-
-def _workspace_write_permission(workspace_root: str) -> dict:
-    return {
-        "approvalPolicy": "on-request",
-        "approvalsReviewer": "user",
-        "sandboxPolicy": {
-            "type": "workspaceWrite",
-            "writableRoots": [workspace_root],
-            "excludeSlashTmp": False,
-            "excludeTmpdirEnvVar": False,
-            "networkAccess": False,
-        },
-    }
 
 
 def repair_desktop(
@@ -243,7 +194,7 @@ def repair_desktop(
             else existing_thread_name or parent_thread_name or preview_title or session_id
         )
         if cwd:
-            desktop_cwd = _desktop_visible_path(cwd)
+            desktop_cwd = desktop_visible_path(cwd)
             candidate = nearest_existing_parent(desktop_cwd) or desktop_cwd
             if candidate and candidate not in workspace_candidates:
                 workspace_candidates[candidate] = True
@@ -251,13 +202,13 @@ def repair_desktop(
         archived = 1 if "archived_sessions" in session_file.parts else 0
         if desktop_like and provider and session_meta.get("model_provider") == provider and not archived:
             if cwd:
-                desktop_cwd = _desktop_visible_path(cwd)
-                workspace_root = _desktop_visible_path(nearest_existing_parent(desktop_cwd) or desktop_cwd)
+                desktop_cwd = desktop_visible_path(cwd)
+                workspace_root = desktop_visible_path(nearest_existing_parent(desktop_cwd) or desktop_cwd)
                 if workspace_root:
                     thread_workspace_hints[session_id] = workspace_root
                 if workspace_root.lower().startswith(str(paths.code_dir).lower()):
                     visible_thread_ids.append(session_id)
-                thread_permissions[session_id] = _workspace_write_permission(workspace_root)
+                thread_permissions[session_id] = workspace_write_permission(workspace_root)
 
         entries.append(
             {
@@ -317,68 +268,13 @@ def repair_desktop(
             warnings.append(f"Warning: failed to read state file {paths.state_file}: {exc}")
             state_data = {}
 
-        saved_roots = list(state_data.get("electron-saved-workspace-roots", []))
-        project_order = list(state_data.get("project-order", []))
-
-        # On case-insensitive filesystems (Windows NTFS, macOS APFS-default)
-        # `relative_to` is a string compare and would treat `C:\Users\Foo`
-        # vs `c:\users\foo` as distinct, allowing duplicate workspace entries
-        # to accumulate. Compare under normcase so case-only variants dedupe.
-        def _is_subpath_ci(child: Path, parent: Path) -> bool:
-            try:
-                child_norm = Path(os.path.normcase(str(child)))
-                parent_norm = Path(os.path.normcase(str(parent)))
-                child_norm.relative_to(parent_norm)
-                return True
-            except ValueError:
-                return False
-
-        normcased_existing = {os.path.normcase(item) for item in saved_roots}
-        normcased_order = {os.path.normcase(item) for item in project_order}
-        for root in workspace_candidates:
-            root_path = Path(root)
-            covered = any(
-                _is_subpath_ci(root_path, Path(existing)) for existing in saved_roots
-            )
-            if not covered:
-                saved_roots.append(root)
-                normcased_existing.add(os.path.normcase(root))
-                if os.path.normcase(root) not in normcased_order:
-                    project_order.append(root)
-                    normcased_order.add(os.path.normcase(root))
-
-        if not dry_run:
-            state_data["electron-saved-workspace-roots"] = saved_roots
-            state_data["active-workspace-roots"] = list(saved_roots)
-            state_data["project-order"] = project_order
-            state_data["projectless-thread-ids"] = _merge_ordered_strings(
-                state_data.get("projectless-thread-ids"),
-                visible_thread_ids,
-            )
-            state_data["thread-workspace-root-hints"] = _merge_string_mapping(
-                state_data.get("thread-workspace-root-hints"),
-                thread_workspace_hints,
-            )
-            atom_state = state_data.setdefault("electron-persisted-atom-state", {})
-            if isinstance(atom_state, dict):
-                atom_state["projectless-thread-ids"] = _merge_ordered_strings(
-                    atom_state.get("projectless-thread-ids"),
-                    visible_thread_ids,
-                )
-                atom_state["thread-workspace-root-hints"] = _merge_string_mapping(
-                    atom_state.get("thread-workspace-root-hints"),
-                    thread_workspace_hints,
-                )
-                existing_permissions = atom_state.get("heartbeat-thread-permissions-by-id")
-                if not isinstance(existing_permissions, dict):
-                    existing_permissions = {}
-                merged_permissions = dict(existing_permissions)
-                for session_id, permission in thread_permissions.items():
-                    merged_permissions.setdefault(session_id, permission)
-                atom_state["heartbeat-thread-permissions-by-id"] = merged_permissions
-        else:
-            state_data = dict(state_data)
-            state_data["active-workspace-roots"] = list(saved_roots)
+        state_data = merge_desktop_visibility_state(
+            state_data,
+            workspace_roots=workspace_candidates.keys(),
+            visible_thread_ids=visible_thread_ids,
+            thread_workspace_hints=thread_workspace_hints,
+            thread_permissions=thread_permissions,
+        )
 
         if not dry_run:
             backup_file(paths.code_dir, backup_root, backed_up, paths.state_file, enabled=True)
@@ -390,52 +286,13 @@ def repair_desktop(
     if state_db and state_db.exists():
         if not dry_run:
             backup_file(paths.code_dir, backup_root, backed_up, state_db, enabled=True)
-        # long_path() prefixes \\?\ on Windows when the path exceeds MAX_PATH
-        # (260 chars); sqlite3 ultimately uses CreateFileW which honours that
-        # prefix. No-op on POSIX where it just returns the original string.
-        with closing(sqlite3.connect(long_path(state_db), timeout=30)) as conn, conn:
-            cur = conn.cursor()
-            row = cur.execute("select name from sqlite_master where type='table' and name='threads'").fetchone()
-            if row:
-                columns = [r[1] for r in cur.execute("pragma table_info(threads)").fetchall()]
-                updatable_entries = [entry for entry in entries if entry["kind"] == "desktop"]
-                for entry in updatable_entries:
-                    data = {
-                        "id": entry["id"],
-                        "rollout_path": str(entry["session_file"]),
-                        "created_at": iso_to_epoch(entry["created_iso"]),
-                        "updated_at": iso_to_epoch(entry["updated_iso"]),
-                        "source": (entry["source"] if isinstance(entry["source"], str) and entry["source"] else "vscode"),
-                        "model_provider": entry["model_provider"] or provider,
-                        "cwd": entry["cwd"],
-                        "title": entry["thread_name"],
-                        "sandbox_policy": entry["sandbox_policy"],
-                        "approval_mode": entry["approval_mode"],
-                        "tokens_used": 0,
-                        "has_user_event": 1,
-                        "archived": entry["archived"],
-                        "archived_at": iso_to_epoch(entry["updated_iso"]) if entry["archived"] else None,
-                        "cli_version": entry["cli_version"],
-                        "first_user_message": entry["first_user_message"],
-                        "memory_mode": "enabled",
-                        "model": entry["model"],
-                        "reasoning_effort": entry["reasoning_effort"],
-                    }
-                    insert_cols = [name for name in data if name in columns]
-                    placeholders = ", ".join("?" for _ in insert_cols)
-                    col_list = ", ".join(insert_cols)
-                    update_cols = [name for name in insert_cols if name != "id"]
-                    update_sql = ", ".join(f"{name}=excluded.{name}" for name in update_cols)
-                    values = [_sqlite_value(data[name]) for name in insert_cols]
-                    sql = f"insert into threads ({col_list}) values ({placeholders}) on conflict(id) do update set {update_sql}"
-                    if not dry_run:
-                        cur.execute(sql, values)
-                    threads_updated += 1
-
-                if not dry_run:
-                    conn.commit()
-            else:
-                warnings.append(f"threads table not found in {state_db}")
+        threads_updated, thread_warnings = upsert_thread_entries(
+            state_db,
+            [entry for entry in entries if entry["kind"] == "desktop"],
+            provider=provider,
+            dry_run=dry_run,
+        )
+        warnings.extend(thread_warnings)
 
     return RepairResult(
         provider=provider,

@@ -3,10 +3,7 @@
 from __future__ import annotations
 
 import json
-import os
-import sqlite3
-from collections import OrderedDict
-from contextlib import closing, nullcontext
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -15,12 +12,11 @@ from ..errors import ToolkitError
 from ..models import PromoteSessionResult
 from ..paths import CodexPaths
 from ..services.provider import detect_provider
-from ..services.repair import (
-    _desktop_visible_path,
-    _merge_ordered_strings,
-    _merge_string_mapping,
-    _sqlite_value,
-    _workspace_write_permission,
+from ..stores.desktop_state import (
+    merge_desktop_visibility_state,
+    session_workspace_roots,
+    upsert_thread_entries,
+    workspace_write_permission,
 )
 from ..stores.history import first_history_messages
 from ..stores.index import load_existing_index, upsert_session_index
@@ -35,36 +31,10 @@ from ..support import (
     backup_file,
     classify_session_kind,
     file_lock,
-    iso_to_epoch,
     lock_path_for,
-    long_path,
-    nearest_existing_parent,
     normalize_iso,
     prune_old_backups,
 )
-
-
-def _session_workspace_roots(cwd: str) -> list[str]:
-    if not cwd:
-        return []
-    visible_cwd = _desktop_visible_path(cwd)
-    roots: "OrderedDict[str, bool]" = OrderedDict()
-    nearest = nearest_existing_parent(visible_cwd) or visible_cwd
-    for candidate in (nearest, visible_cwd):
-        if candidate:
-            roots[_desktop_visible_path(candidate)] = True
-    parent = str(Path(nearest).parent) if nearest else ""
-    if parent and parent != nearest:
-        roots[_desktop_visible_path(parent)] = True
-    return list(roots)
-
-
-def _is_subpath_ci(child: Path, parent: Path) -> bool:
-    try:
-        Path(os.path.normcase(str(child))).relative_to(Path(os.path.normcase(str(parent))))
-        return True
-    except ValueError:
-        return False
 
 
 def _write_promoted_session_meta(session_file: Path, records: list[tuple[str, dict | None]], session_meta: dict) -> None:
@@ -159,7 +129,7 @@ def promote_session(
     existing_thread_name = existing_index.get(session_id, {}).get("thread_name", "")
     thread_name = preview_title if is_placeholder_thread_name(existing_thread_name, session_id) else existing_thread_name or preview_title or session_id
 
-    workspace_roots = _session_workspace_roots(cwd)
+    workspace_roots = session_workspace_roots(cwd)
     workspace_root = workspace_roots[0] if workspace_roots else ""
 
     if not dry_run:
@@ -177,49 +147,16 @@ def promote_session(
         if not isinstance(state_data, dict):
             state_data = {}
 
-        saved_roots = [item for item in state_data.get("electron-saved-workspace-roots", []) if isinstance(item, str)]
-        project_order = [item for item in state_data.get("project-order", []) if isinstance(item, str)]
-        for root in workspace_roots:
-            root_path = Path(root)
-            if not any(_is_subpath_ci(root_path, Path(existing)) for existing in saved_roots):
-                saved_roots.append(root)
-            if root not in project_order:
-                project_order.append(root)
+        state_data = merge_desktop_visibility_state(
+            state_data,
+            workspace_roots=workspace_roots,
+            visible_thread_ids=([session_id] if workspace_root else []),
+            thread_workspace_hints=({session_id: workspace_root} if workspace_root else {}),
+            thread_permissions=({session_id: workspace_write_permission(workspace_root)} if workspace_root else {}),
+            expand_workspace_roots=workspace_roots,
+        )
 
         if not dry_run:
-            state_data["electron-saved-workspace-roots"] = saved_roots
-            state_data["active-workspace-roots"] = list(saved_roots)
-            state_data["project-order"] = project_order
-            if workspace_root:
-                state_data["projectless-thread-ids"] = _merge_ordered_strings(
-                    state_data.get("projectless-thread-ids"),
-                    [session_id],
-                )
-                state_data["thread-workspace-root-hints"] = _merge_string_mapping(
-                    state_data.get("thread-workspace-root-hints"),
-                    {session_id: workspace_root},
-                )
-            atom_state = state_data.setdefault("electron-persisted-atom-state", {})
-            if isinstance(atom_state, dict):
-                collapsed = atom_state.get("sidebar-collapsed-groups")
-                if isinstance(collapsed, dict):
-                    for root in workspace_roots:
-                        collapsed.pop(root, None)
-                if workspace_root:
-                    atom_state["projectless-thread-ids"] = _merge_ordered_strings(
-                        atom_state.get("projectless-thread-ids"),
-                        [session_id],
-                    )
-                    atom_state["thread-workspace-root-hints"] = _merge_string_mapping(
-                        atom_state.get("thread-workspace-root-hints"),
-                        {session_id: workspace_root},
-                    )
-                    permissions = atom_state.get("heartbeat-thread-permissions-by-id")
-                    if not isinstance(permissions, dict):
-                        permissions = {}
-                    permissions[session_id] = _workspace_write_permission(workspace_root)
-                    atom_state["heartbeat-thread-permissions-by-id"] = permissions
-
             backup_file(paths.code_dir, backup_root, backed_up, paths.state_file, enabled=True)
             with atomic_write(paths.state_file) as fh:
                 json.dump(state_data, fh, ensure_ascii=False, separators=(",", ":"))
@@ -230,43 +167,32 @@ def promote_session(
     if state_db and state_db.exists():
         if not dry_run:
             backup_file(paths.code_dir, backup_root, backed_up, state_db, enabled=True)
-        with closing(sqlite3.connect(long_path(state_db), timeout=30)) as conn, conn:
-            cur = conn.cursor()
-            row = cur.execute("select name from sqlite_master where type='table' and name='threads'").fetchone()
-            if row:
-                columns = [r[1] for r in cur.execute("pragma table_info(threads)").fetchall()]
-                data = {
+        thread_count, thread_warnings = upsert_thread_entries(
+            state_db,
+            [
+                {
                     "id": session_id,
-                    "rollout_path": str(session_file),
-                    "created_at": iso_to_epoch(created_iso or updated_iso),
-                    "updated_at": iso_to_epoch(updated_iso),
+                    "session_file": session_file,
+                    "created_iso": created_iso or updated_iso,
+                    "updated_iso": updated_iso,
                     "source": "vscode",
                     "model_provider": provider,
                     "cwd": cwd,
-                    "title": thread_name,
+                    "thread_name": thread_name,
                     "sandbox_policy": json.dumps(turn_context.get("sandbox_policy", {}), ensure_ascii=False, separators=(",", ":")),
                     "approval_mode": turn_context.get("approval_policy", "on-request"),
-                    "tokens_used": 0,
-                    "has_user_event": 1,
                     "archived": 0,
-                    "archived_at": None,
                     "cli_version": updated_meta.get("cli_version", ""),
                     "first_user_message": preview_title or thread_name,
-                    "memory_mode": "enabled",
                     "model": turn_context.get("model"),
                     "reasoning_effort": turn_context.get("effort"),
                 }
-                insert_cols = [name for name in data if name in columns]
-                placeholders = ", ".join("?" for _ in insert_cols)
-                col_list = ", ".join(insert_cols)
-                update_cols = [name for name in insert_cols if name != "id"]
-                update_sql = ", ".join(f"{name}=excluded.{name}" for name in update_cols)
-                sql = f"insert into threads ({col_list}) values ({placeholders}) on conflict(id) do update set {update_sql}"
-                if not dry_run:
-                    cur.execute(sql, [_sqlite_value(data[name]) for name in insert_cols])
-                thread_upserted = True
-            else:
-                warnings.append(f"threads table not found in {state_db}")
+            ],
+            provider=provider,
+            dry_run=dry_run,
+        )
+        thread_upserted = thread_count > 0
+        warnings.extend(thread_warnings)
 
     return PromoteSessionResult(
         provider=provider,
