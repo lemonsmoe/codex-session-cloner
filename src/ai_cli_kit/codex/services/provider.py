@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 from datetime import datetime
 from typing import Any
@@ -66,26 +65,15 @@ def _provider_from_openai_official(
     text: str,
 ) -> str:
     marketplaces = data.get("marketplaces")
-    mentions_openai_bundle = isinstance(marketplaces, dict) and "openai-bundled" in marketplaces
-    if not mentions_openai_bundle and "openai-bundled" not in text.lower():
-        return ""
-
-    auth_file = paths.code_dir / "auth.json"
-    try:
-        auth_data = json.loads(auth_file.read_text(encoding="utf-8")) if auth_file.exists() else {}
-    except (OSError, json.JSONDecodeError):
-        auth_data = {}
-    if not isinstance(auth_data, dict):
-        return ""
-
-    auth_mode = _nonempty_str(auth_data.get("auth_mode")).lower()
-    tokens = auth_data.get("tokens")
-    has_chatgpt_tokens = isinstance(tokens, dict) and any(
-        _nonempty_str(tokens.get(key)) for key in ("id_token", "access_token", "refresh_token")
+    official_marketplaces = {"openai-bundled", "openai-primary-runtime"}
+    mentions_official_marketplace = (
+        isinstance(marketplaces, dict)
+        and any(name in marketplaces for name in official_marketplaces)
     )
-    if auth_mode == "chatgpt" and has_chatgpt_tokens:
-        return OPENAI_OFFICIAL_PROVIDER
-    return ""
+    lower_text = text.lower()
+    if not mentions_official_marketplace and not any(name in lower_text for name in official_marketplaces):
+        return ""
+    return OPENAI_OFFICIAL_PROVIDER
 
 
 def _provider_requires_openai_auth(data: dict[str, Any], provider_name: str) -> bool:

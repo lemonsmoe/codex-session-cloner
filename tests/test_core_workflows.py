@@ -457,7 +457,7 @@ class ProviderDetectionTests(unittest.TestCase):
             )
             self.assertEqual(detect_provider(CodexPaths(home=home)), "only_one")
 
-    def test_detect_provider_does_not_infer_openai_from_bundled_api_key_only(self) -> None:
+    def test_detect_provider_infers_openai_from_official_bundled_marketplace(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             home = Path(tmpdir) / "home"
             code_dir = home / ".codex"
@@ -470,8 +470,36 @@ class ProviderDetectionTests(unittest.TestCase):
                 json.dumps({"OPENAI_API_KEY": "sk-test"}, separators=(",", ":")),
                 encoding="utf-8",
             )
-            with self.assertRaises(ToolkitError):
-                detect_provider(CodexPaths(home=home))
+            write_session(
+                home,
+                "22222222-2222-2222-2222-222222222222",
+                provider="linkapi",
+                source="vscode",
+                originator="Codex Desktop",
+                cwd=Path("/tmp/project-a"),
+            )
+            self.assertEqual(detect_provider(CodexPaths(home=home)), "openai")
+
+    def test_detect_provider_infers_openai_from_primary_runtime_marketplace(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            home = Path(tmpdir) / "home"
+            code_dir = home / ".codex"
+            code_dir.mkdir(parents=True, exist_ok=True)
+            (code_dir / "config.toml").write_text(
+                '[marketplaces.openai-primary-runtime]\n'
+                'source_type = "local"\n'
+                'source = "C:/tmp/openai-primary-runtime"\n',
+                encoding="utf-8",
+            )
+            write_session(
+                home,
+                "22222222-2222-2222-2222-222222222222",
+                provider="linkapi",
+                source="vscode",
+                originator="Codex Desktop",
+                cwd=Path("/tmp/project-a"),
+            )
+            self.assertEqual(detect_provider(CodexPaths(home=home)), "openai")
 
     def test_detect_provider_keeps_explicit_config_over_bundled_api_key(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
