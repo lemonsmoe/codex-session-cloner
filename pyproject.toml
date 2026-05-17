@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "ai-cli-kit"
 description = "Unified toolbox for AI CLI agents — Codex session clone/export/import/repair plus Claude Code local cleanup."
 readme = "readme.md"
-requires-python = ">=3.9"
+requires-python = ">=3.12"
 dependencies = []
 dynamic = ["version"]
 

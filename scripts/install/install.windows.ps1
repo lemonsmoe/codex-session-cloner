@@ -27,15 +27,43 @@ Options:
 "@
 }
 
+function Test-PythonCommand {
+    param([string[]] $CommandParts)
+
+    $exe = $CommandParts[0]
+    $preArgs = @()
+    if ($CommandParts.Length -gt 1) {
+        $preArgs = $CommandParts[1..($CommandParts.Length - 1)]
+    }
+
+    & $exe @preArgs -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)" *> $null
+    return ($LASTEXITCODE -eq 0)
+}
+
 function Resolve-PythonCommand {
     param([string] $PreferredPython)
 
+    $candidates = @()
     if ($PreferredPython) {
-        return ,@($PreferredPython)
+        $candidates += ,@($PreferredPython)
+    } else {
+        foreach ($cmd in Get-Command "python" -All -ErrorAction SilentlyContinue) {
+            $candidates += ,@($cmd.Source)
+        }
+        if (Get-Command "py" -ErrorAction SilentlyContinue) {
+            $candidates += ,@("py", "-3.12")
+            $candidates += ,@("py", "-3")
+        }
+        foreach ($cmd in Get-Command "python3" -All -ErrorAction SilentlyContinue) {
+            $candidates += ,@($cmd.Source)
+        }
     }
-    if (Get-Command "python" -ErrorAction SilentlyContinue) { return ,@("python") }
-    if (Get-Command "py" -ErrorAction SilentlyContinue) { return ,@("py", "-3") }
-    if (Get-Command "python3" -ErrorAction SilentlyContinue) { return ,@("python3") }
+
+    foreach ($candidate in $candidates) {
+        if (Test-PythonCommand -CommandParts $candidate) {
+            return ,$candidate
+        }
+    }
     return $null
 }
 
@@ -54,7 +82,8 @@ if ($Help) {
 
 $pyCmd = Resolve-PythonCommand -PreferredPython $Python
 if (-not $pyCmd) {
-    Write-Host "Error: Python not found. Install Python 3 first." -ForegroundColor Red
+    Write-Host "Error: Python 3.12+ not found. Install Python 3.12 or newer first." -ForegroundColor Red
+    Write-Host "Tip: disable the Windows Store python alias or put your real Python before WindowsApps on PATH." -ForegroundColor Yellow
     exit 127
 }
 
