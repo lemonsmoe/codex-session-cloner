@@ -74,12 +74,49 @@ class PackagingSmokeTests(unittest.TestCase):
                 "clean_dry",
                 "dedupe",
                 "dedupe_dry",
+                "promote_session",
                 "repair_desktop",
                 "repair_desktop_dry",
                 "repair_desktop_cli",
                 "repair_desktop_cli_dry",
+                "restore_backup",
+                "switch_provider",
+                "switch_provider_dry",
             },
         )
+
+    def test_tui_repair_hotkeys_put_switch_dry_run_second(self) -> None:
+        repair_actions = [
+            action
+            for action in build_tui_menu_actions()
+            if action.section_id == "repair"
+        ]
+        by_id = {action.action_id: action for action in repair_actions}
+
+        self.assertEqual(by_id["switch_provider"].hotkey, "1")
+        self.assertEqual(by_id["switch_provider"].cli_args, ("switch-provider",))
+        self.assertFalse(by_id["switch_provider"].is_dry_run)
+
+        self.assertEqual(by_id["switch_provider_dry"].hotkey, "2")
+        self.assertEqual(by_id["switch_provider_dry"].cli_args, ("switch-provider", "--dry-run"))
+        self.assertTrue(by_id["switch_provider_dry"].is_dry_run)
+
+        expected_numeric_order = [
+            ("switch_provider", "1"),
+            ("switch_provider_dry", "2"),
+            ("restore_backup", "3"),
+            ("repair_desktop", "4"),
+            ("repair_desktop_dry", "5"),
+            ("dedupe", "6"),
+            ("dedupe_dry", "7"),
+            ("promote_session", "8"),
+            ("clone", "9"),
+        ]
+        self.assertEqual(
+            [(action.action_id, action.hotkey) for action in repair_actions[:9]],
+            expected_numeric_order,
+        )
+        self.assertEqual(by_id["clone_dry"].hotkey, "r")
 
     def test_logo_font_covers_toolkit_wordmark(self) -> None:
         missing = {ch for ch in "CODEX SESSION TOOLKIT" if ch != " " and ch not in LOGO_FONT_BANNER}
