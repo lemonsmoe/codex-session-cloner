@@ -501,6 +501,23 @@ class ProviderDetectionTests(unittest.TestCase):
             )
             self.assertEqual(detect_provider(CodexPaths(home=home)), "openai")
 
+    def test_detect_provider_falls_back_to_recent_session_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            home = Path(tmpdir) / "home"
+            code_dir = home / ".codex"
+            code_dir.mkdir(parents=True, exist_ok=True)
+            (code_dir / "config.toml").write_text('model = "gpt-5.5"\n', encoding="utf-8")
+            write_session(
+                home,
+                "22222222-2222-2222-2222-222222222222",
+                provider="recent-provider",
+                source="vscode",
+                originator="Codex Desktop",
+                cwd=Path("/tmp/project-a"),
+            )
+
+            self.assertEqual(detect_provider(CodexPaths(home=home)), "recent-provider")
+
     def test_detect_provider_keeps_explicit_config_over_bundled_api_key(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             home = Path(tmpdir) / "home"
