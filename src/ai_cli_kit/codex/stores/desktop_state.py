@@ -185,48 +185,51 @@ def upsert_thread_entries(
         return 0, warnings
 
     count = 0
-    with closing(sqlite3.connect(long_path(state_db), timeout=30)) as conn, conn:
-        cur = conn.cursor()
-        row = cur.execute("select name from sqlite_master where type='table' and name='threads'").fetchone()
-        if not row:
-            return 0, [f"threads table not found in {state_db}"]
+    try:
+        with closing(sqlite3.connect(long_path(state_db), timeout=30)) as conn, conn:
+            cur = conn.cursor()
+            row = cur.execute("select name from sqlite_master where type='table' and name='threads'").fetchone()
+            if not row:
+                return 0, [f"threads table not found in {state_db}"]
 
-        columns = [r[1] for r in cur.execute("pragma table_info(threads)").fetchall()]
-        for entry in entries:
-            data = {
-                "id": entry["id"],
-                "rollout_path": str(entry["session_file"]),
-                "created_at": iso_to_epoch(entry["created_iso"]),
-                "updated_at": iso_to_epoch(entry["updated_iso"]),
-                "source": (entry["source"] if isinstance(entry["source"], str) and entry["source"] else "vscode"),
-                "model_provider": entry.get("model_provider") or provider,
-                "cwd": entry.get("cwd", ""),
-                "title": entry.get("thread_name", entry["id"]),
-                "sandbox_policy": entry.get("sandbox_policy", "{}"),
-                "approval_mode": entry.get("approval_mode", "on-request"),
-                "tokens_used": 0,
-                "has_user_event": 1,
-                "archived": entry.get("archived", 0),
-                "archived_at": iso_to_epoch(entry["updated_iso"]) if entry.get("archived") else None,
-                "cli_version": entry.get("cli_version", ""),
-                "first_user_message": entry.get("first_user_message", entry.get("thread_name", entry["id"])),
-                "memory_mode": "enabled",
-                "model": entry.get("model"),
-                "reasoning_effort": entry.get("reasoning_effort"),
-            }
-            insert_cols = [name for name in data if name in columns]
-            placeholders = ", ".join("?" for _ in insert_cols)
-            col_list = ", ".join(insert_cols)
-            update_cols = [name for name in insert_cols if name != "id"]
-            update_sql = ", ".join(f"{name}=excluded.{name}" for name in update_cols)
-            values = [_sqlite_value(data[name]) for name in insert_cols]
-            sql = f"insert into threads ({col_list}) values ({placeholders}) on conflict(id) do update set {update_sql}"
+            columns = [r[1] for r in cur.execute("pragma table_info(threads)").fetchall()]
+            for entry in entries:
+                data = {
+                    "id": entry["id"],
+                    "rollout_path": str(entry["session_file"]),
+                    "created_at": iso_to_epoch(entry["created_iso"]),
+                    "updated_at": iso_to_epoch(entry["updated_iso"]),
+                    "source": (entry["source"] if isinstance(entry["source"], str) and entry["source"] else "vscode"),
+                    "model_provider": entry.get("model_provider") or provider,
+                    "cwd": entry.get("cwd", ""),
+                    "title": entry.get("thread_name", entry["id"]),
+                    "sandbox_policy": entry.get("sandbox_policy", "{}"),
+                    "approval_mode": entry.get("approval_mode", "on-request"),
+                    "tokens_used": 0,
+                    "has_user_event": 1,
+                    "archived": entry.get("archived", 0),
+                    "archived_at": iso_to_epoch(entry["updated_iso"]) if entry.get("archived") else None,
+                    "cli_version": entry.get("cli_version", ""),
+                    "first_user_message": entry.get("first_user_message", entry.get("thread_name", entry["id"])),
+                    "memory_mode": "enabled",
+                    "model": entry.get("model"),
+                    "reasoning_effort": entry.get("reasoning_effort"),
+                }
+                insert_cols = [name for name in data if name in columns]
+                placeholders = ", ".join("?" for _ in insert_cols)
+                col_list = ", ".join(insert_cols)
+                update_cols = [name for name in insert_cols if name != "id"]
+                update_sql = ", ".join(f"{name}=excluded.{name}" for name in update_cols)
+                values = [_sqlite_value(data[name]) for name in insert_cols]
+                sql = f"insert into threads ({col_list}) values ({placeholders}) on conflict(id) do update set {update_sql}"
+                if not dry_run:
+                    cur.execute(sql, values)
+                count += 1
+
             if not dry_run:
-                cur.execute(sql, values)
-            count += 1
-
-        if not dry_run:
-            conn.commit()
+                conn.commit()
+    except (OSError, sqlite3.Error) as exc:
+        return 0, [f"Skipped threads table update for {state_db}: {exc}"]
 
     return count, warnings
 

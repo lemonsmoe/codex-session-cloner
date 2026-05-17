@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from contextlib import contextmanager
 from pathlib import Path
+from unittest import mock
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -1558,6 +1559,44 @@ class CoreWorkflowTests(unittest.TestCase):
             ).fetchone()
             conn.close()
             self.assertEqual(row, ("修复波动监控标题回填逻辑", "修复波动监控标题回填逻辑"))
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def test_repair_desktop_warns_instead_of_crashing_when_threads_db_is_busy(self) -> None:
+        tmpdir = tempfile.mkdtemp()
+        try:
+            workspace = Path(tmpdir) / "workspace"
+            home = Path(tmpdir) / "home"
+            workspace.mkdir()
+            write_config(home, "target-provider")
+            write_state_file(home)
+            create_threads_db(home)
+
+            project_cwd = workspace / "project"
+            project_cwd.mkdir()
+            session_id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+            write_session(
+                home,
+                session_id,
+                provider="target-provider",
+                source="vscode",
+                originator="Codex Desktop",
+                cwd=project_cwd,
+                user_message="busy state database",
+            )
+
+            paths = CodexPaths(home=home)
+            with mock.patch(
+                "ai_cli_kit.codex.stores.desktop_state.sqlite3.connect",
+                side_effect=sqlite3.OperationalError("database is locked"),
+            ):
+                result = repair_desktop(paths)
+
+            self.assertEqual(result.threads_updated, 0)
+            self.assertTrue(
+                any("threads table" in warning and "database is locked" in warning for warning in result.warnings),
+                result.warnings,
+            )
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
 

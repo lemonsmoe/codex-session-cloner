@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from collections import OrderedDict
 from contextlib import nullcontext
 from datetime import datetime, timezone
@@ -41,6 +42,10 @@ from ..support import (
 
 def _string_field(value: Any, default: str = "") -> str:
     return value if isinstance(value, str) else default
+
+
+def _warn_write_failed(warnings: list[str], label: str, path: object, exc: BaseException) -> None:
+    warnings.append(f"Warning: skipped {label} for {path}: {exc}")
 
 
 def repair_desktop(
@@ -154,22 +159,25 @@ def repair_desktop(
         if changed or sanitize_embedded_meta:
             changed_sessions.append(str(session_file))
             if not dry_run:
-                backup_file(paths.code_dir, backup_root, backed_up, session_file, enabled=True)
-                with atomic_write(session_file) as fh:
-                    for idx, (raw, obj) in enumerate(records):
-                        if not obj:
-                            fh.write(raw)
-                            continue
-                        if idx == session_meta_index and obj.get("type") == "session_meta" and isinstance(obj.get("payload"), dict):
-                            patched = dict(obj)
-                            patched["payload"] = updated_meta
-                            fh.write(json.dumps(patched, ensure_ascii=False, separators=(",", ":")) + "\n")
-                        elif idx in embedded_session_meta_indices and obj.get("type") == "session_meta":
-                            patched = dict(obj)
-                            patched["type"] = "session_meta_embedded"
-                            fh.write(json.dumps(patched, ensure_ascii=False, separators=(",", ":")) + "\n")
-                        else:
-                            fh.write(raw)
+                try:
+                    backup_file(paths.code_dir, backup_root, backed_up, session_file, enabled=True)
+                    with atomic_write(session_file) as fh:
+                        for idx, (raw, obj) in enumerate(records):
+                            if not obj:
+                                fh.write(raw)
+                                continue
+                            if idx == session_meta_index and obj.get("type") == "session_meta" and isinstance(obj.get("payload"), dict):
+                                patched = dict(obj)
+                                patched["payload"] = updated_meta
+                                fh.write(json.dumps(patched, ensure_ascii=False, separators=(",", ":")) + "\n")
+                            elif idx in embedded_session_meta_indices and obj.get("type") == "session_meta":
+                                patched = dict(obj)
+                                patched["type"] = "session_meta_embedded"
+                                fh.write(json.dumps(patched, ensure_ascii=False, separators=(",", ":")) + "\n")
+                            else:
+                                fh.write(raw)
+                except OSError as exc:
+                    _warn_write_failed(warnings, "session metadata rewrite", session_file, exc)
 
         session_meta = updated_meta
         created_iso = normalize_iso(str(session_meta.get("timestamp", ""))) or normalize_iso(last_timestamp)
@@ -245,16 +253,19 @@ def repair_desktop(
     entries = unique_entries
 
     if not dry_run:
-        backup_file(paths.code_dir, backup_root, backed_up, paths.index_file, enabled=True)
-        # Serialise against concurrent upsert/remove on session_index.jsonl.
-        with atomic_write(paths.index_file, lock_path=lock_path_for(paths.index_file)) as fh:
-            for entry in entries:
-                obj = {
-                    "id": entry["id"],
-                    "thread_name": entry["thread_name"],
-                    "updated_at": entry["updated_at"],
-                }
-                fh.write(json.dumps(obj, ensure_ascii=False, separators=(",", ":")) + "\n")
+        try:
+            backup_file(paths.code_dir, backup_root, backed_up, paths.index_file, enabled=True)
+            # Serialise against concurrent upsert/remove on session_index.jsonl.
+            with atomic_write(paths.index_file, lock_path=lock_path_for(paths.index_file)) as fh:
+                for entry in entries:
+                    obj = {
+                        "id": entry["id"],
+                        "thread_name": entry["thread_name"],
+                        "updated_at": entry["updated_at"],
+                    }
+                    fh.write(json.dumps(obj, ensure_ascii=False, separators=(",", ":")) + "\n")
+        except OSError as exc:
+            _warn_write_failed(warnings, "session_index.jsonl rebuild", paths.index_file, exc)
 
     state_lock_path = lock_path_for(paths.state_file)
     # Hold the state.json lock for the entire read-modify-write so concurrent
@@ -277,22 +288,28 @@ def repair_desktop(
         )
 
         if not dry_run:
-            backup_file(paths.code_dir, backup_root, backed_up, paths.state_file, enabled=True)
-            with atomic_write(paths.state_file) as fh:
-                json.dump(state_data, fh, ensure_ascii=False, separators=(",", ":"))
-                fh.write("\n")
+            try:
+                backup_file(paths.code_dir, backup_root, backed_up, paths.state_file, enabled=True)
+                with atomic_write(paths.state_file) as fh:
+                    json.dump(state_data, fh, ensure_ascii=False, separators=(",", ":"))
+                    fh.write("\n")
+            except OSError as exc:
+                _warn_write_failed(warnings, "Desktop state update", paths.state_file, exc)
 
     threads_updated = 0
     if state_db and state_db.exists():
-        if not dry_run:
-            backup_file(paths.code_dir, backup_root, backed_up, state_db, enabled=True)
-        threads_updated, thread_warnings = upsert_thread_entries(
-            state_db,
-            [entry for entry in entries if entry["kind"] == "desktop"],
-            provider=provider,
-            dry_run=dry_run,
-        )
-        warnings.extend(thread_warnings)
+        try:
+            if not dry_run:
+                backup_file(paths.code_dir, backup_root, backed_up, state_db, enabled=True)
+            threads_updated, thread_warnings = upsert_thread_entries(
+                state_db,
+                [entry for entry in entries if entry["kind"] == "desktop"],
+                provider=provider,
+                dry_run=dry_run,
+            )
+            warnings.extend(thread_warnings)
+        except (OSError, sqlite3.Error) as exc:
+            _warn_write_failed(warnings, "threads table update", state_db, exc)
 
     return RepairResult(
         provider=provider,

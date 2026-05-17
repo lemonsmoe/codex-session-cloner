@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import os
 import platform
+import sqlite3
 import sys
 from typing import Optional, Sequence
 
@@ -122,6 +123,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return run_toolkit_cli(argv)
         except ToolkitError as exc:
             print(str(exc), file=sys.stderr)
+            return 1
+        except (OSError, sqlite3.Error) as exc:
+            print(f"Operation failed because a local Codex file appears busy or unavailable: {exc}", file=sys.stderr)
+            print("Close Codex/CodeKeep, or rerun the command after the file is released.", file=sys.stderr)
             return 1
 
     parser = create_arg_parser()

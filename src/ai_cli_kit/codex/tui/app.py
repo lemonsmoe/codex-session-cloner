@@ -9,6 +9,7 @@ argument compatibility and command dispatch.
 from __future__ import annotations
 
 import os
+import sqlite3
 import sys
 from dataclasses import dataclass
 from typing import Callable, List, Optional, Sequence, Tuple
@@ -470,6 +471,12 @@ class ToolkitTuiApp:
             return int(run_toolkit_cli(cli_args))
         except ToolkitError as exc:
             self._print_centered_text(style_text(str(exc), Ansi.RED))
+            return 1
+        except (OSError, sqlite3.Error) as exc:
+            self._print_centered_text(
+                style_text(f"Local Codex data file is busy or unavailable: {exc}", Ansi.RED)
+            )
+            self._print_centered_text(style_text("Close Codex/CodeKeep, then retry this action.", Ansi.YELLOW))
             return 1
 
     def _action_color(self, menu_action: TuiMenuAction) -> str:
