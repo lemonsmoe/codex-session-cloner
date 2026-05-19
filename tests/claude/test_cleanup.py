@@ -2216,9 +2216,20 @@ class R8Pass1RegressionTests(unittest.TestCase):
             self.assertEqual(paths.xdg_cache_claude, home / ".cache" / "claude")
             self.assertEqual(paths.xdg_state_claude, home / ".local" / "state" / "claude")
 
-    def test_path_size_cache_skips_child_sig_on_top_mtime_hit(self) -> None:
-        """R8 M4 perf: when top mtime matches a cached entry, the
-        expensive child_mtime_signature scandir walk is skipped."""
+    def test_path_size_cache_hits_on_unchanged_content(self) -> None:
+        """When content (and hence child_sig) is unchanged between
+        calls, the second call must hit cache without doing the
+        expensive recursive ``_scandir_size`` walk.
+
+        The original R8 M4 fast path tried to also skip
+        ``_child_mtime_signature``, but that was unsound: a subdir-only
+        write (e.g. cc rolling out ``projects/<cwd>/<file>``) does not
+        bubble mtime up to the cached path, so the fast path returned
+        stale sizes (see ``PathSizeChildMtimeTests`` in
+        ``test_claude_hardening.py``). ``_child_mtime_signature`` is
+        shallow (immediate children only), so always computing it on
+        the slow path is cheap; only ``_scandir_size`` is worth
+        guarding behind the cache."""
         from unittest.mock import patch
         from ai_cli_kit.claude.services import _PATH_SIZE_CACHE, _path_size
 
@@ -2230,10 +2241,10 @@ class R8Pass1RegressionTests(unittest.TestCase):
             # Prime cache.
             first = _path_size(d)
             self.assertEqual(first, 1)
-            # Second call must NOT call _child_mtime_signature.
+            # Second call must NOT call _scandir_size.
             with patch(
-                "ai_cli_kit.claude.services._child_mtime_signature",
-                side_effect=AssertionError("child_sig should be skipped on top-mtime hit"),
+                "ai_cli_kit.claude.services._scandir_size",
+                side_effect=AssertionError("cache should hit on unchanged content"),
             ):
                 second = _path_size(d)
             self.assertEqual(second, 1)

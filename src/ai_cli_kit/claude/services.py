@@ -3286,17 +3286,14 @@ def _path_size(path: Path) -> int:
         top_mtime_ns = path.stat().st_mtime_ns
     except OSError:
         top_mtime_ns = 0
-    # R8 pass-1 M4 perf: try a cheap lookup keyed only on top mtime
-    # FIRST. Computing ``_child_mtime_signature`` walks every immediate
-    # child stat and is the dominant cost for large ``projects_dir``.
-    # If any cache key with the same (path, top_mtime, *) hits we can
-    # skip the child walk entirely.
-    with _PATH_SIZE_CACHE_LOCK:
-        for k, v in reversed(_PATH_SIZE_CACHE.items()):
-            if k[0] == str(path) and k[1] == top_mtime_ns:
-                _PATH_SIZE_CACHE.move_to_end(k)
-                return v
-    # Top mtime miss → child churn possible; compute the full signature.
+    # The cache MUST key on both top_mtime AND child_sig: a deep write
+    # (e.g. cc rolling out ``projects/<cwd>/<file>``) does not bubble
+    # mtime up to ``path`` itself, but it does change child_sig — so a
+    # top_mtime-only fast path would return a stale answer. A previous
+    # "R8 pass-1 M4 perf" shortcut did exactly that and triggered a
+    # flaky 3.10 CI failure when FS timestamp truncation hid the bug
+    # on other Python versions. ``_child_mtime_signature`` is shallow
+    # (immediate children only) so the cost is bounded.
     child_sig = _child_mtime_signature(path)
     cache_key = (str(path), top_mtime_ns, child_sig)
 
