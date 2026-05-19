@@ -11,7 +11,7 @@ from ..models import ArchivedCleanupResult
 from ..paths import CodexPaths
 from ..stores.index import remove_session_index_entries
 from ..stores.session_files import read_session_payload, session_id_from_filename
-from ..support import atomic_write, lock_path_for, long_path
+from ..support import atomic_write, file_lock, lock_path_for, long_path
 
 
 def _archived_rollout_files(paths: CodexPaths) -> list[Path]:
@@ -214,15 +214,23 @@ def clean_archived_sessions(paths: CodexPaths, *, dry_run: bool = False) -> Arch
     deleted_files: list[Path] = []
     deleted_lock_files: list[Path] = []
     for session_file in archived_files:
+        # Hold the per-rollout file_lock across unlink so a concurrent
+        # Codex Desktop / toolkit writer cannot race the deletion (matches
+        # the r3 convention established for import_session).
+        lock_file = lock_path_for(session_file)
         try:
-            lock_file = lock_path_for(session_file)
-            session_file.unlink()
-            deleted_files.append(session_file)
+            with file_lock(lock_file):
+                session_file.unlink()
+                deleted_files.append(session_file)
+        except Exception as exc:
+            errors.append((session_file, str(exc)))
+            continue
+        try:
             if lock_file.exists():
                 lock_file.unlink()
                 deleted_lock_files.append(lock_file)
-        except Exception as exc:
-            errors.append((session_file, str(exc)))
+        except OSError as exc:
+            errors.append((lock_file, str(exc)))
 
     deleted_session_ids = sorted(metadata_session_ids)
     if deleted_session_ids:
