@@ -30,6 +30,7 @@ from ..stores.bundles import (
     collect_known_bundle_summaries,
     latest_distinct_bundle_summaries,
 )
+from ...core.tui.screen_mode import ScreenModeDecision, resolve_screen_mode
 from .terminal import (
     Ansi,
     _WINDOWS_VT_OK,
@@ -219,12 +220,13 @@ def run_cleanup_mode(
 
 
 class ToolkitTuiApp:
-    def __init__(self, context: ToolkitAppContext) -> None:
+    def __init__(self, context: ToolkitAppContext, screen_mode: Optional[ScreenModeDecision] = None) -> None:
         self.context = context
         self.paths = CodexPaths()
         self.menu_actions = build_tui_menu_actions()
         self.menu_sections = build_tui_menu_sections()
         self.hotkey_to_index = {menu_action.hotkey: idx for idx, menu_action in enumerate(self.menu_actions)}
+        self.screen_mode = screen_mode or resolve_screen_mode()
 
     def _cli_preview(self, args: Sequence[str]) -> str:
         cmd = self.context.entry_command
@@ -1732,7 +1734,7 @@ class ToolkitTuiApp:
         # ``os.system("cls")`` on those consoles.
         if not hub_active:
             if _WINDOWS_VT_OK:
-                sys.stdout.write("\033[?1049h\033[H")
+                sys.stdout.write(self.screen_mode.enter_sequence)
                 sys.stdout.flush()
             else:
                 clear_screen()
@@ -1882,7 +1884,7 @@ class ToolkitTuiApp:
             # on top of the same alt-screen surface.
             if not hub_active:
                 if _WINDOWS_VT_OK:
-                    sys.stdout.write("\033[?25h\033[?1049l")
+                    sys.stdout.write(self.screen_mode.exit_sequence)
                 else:
                     clear_screen()
             else:

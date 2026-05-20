@@ -68,6 +68,8 @@ chmod +x install.sh aik cc-clean codex-session-toolkit codex-session-toolkit.com
 ./aik                         # 进入交互菜单
 ```
 
+`./install.sh --force` 现在会拒绝删除项目根目录，以及任何会把当前仓库一起删掉的祖先目录；`VENV_DIR` 只应用来指向单独的虚拟环境目录。
+
 ### 一键安装（Windows）
 
 双击 `install.bat`，再双击 `aik.cmd`。或：
@@ -77,6 +79,8 @@ chmod +x install.sh aik cc-clean codex-session-toolkit codex-session-toolkit.com
 .\install.ps1 -NoScripts      # 极简安装：装包但不注册命令
 .\aik.cmd
 ```
+
+`.\install.ps1 -Force` 同样会拒绝把仓库根目录或其祖先目录当成 `VENV_DIR` 删除。
 
 ### `python -m` 直跑（不想注册任何命令）
 
@@ -218,6 +222,7 @@ scratchpad: ${TMPDIR}/claude (Windows) / ${TMPDIR}/claude-<uid> (POSIX)
 **安全机制**：
 
 - 默认所有删除走 `~/.claude-clean-backups/<时间戳-uuid>/` 备份目录，POSIX 上 0o700 + 内文件 0o600
+- `prune-backups` / `restore` / `remap-history` 认定“最新备份”时优先使用备份目录名里的创建时间（以及 sidecar metadata），不会因为旧备份目录后来被 touch / copy 而错把它排到最新
 - 备份带 `_cc_clean_meta.json` sidecar 记录原始 anchor，确保 restore 能还原到正确位置
 - restore 严格防路径穿越：trusted-anchor whitelist + commonpath 边界 + dst 父链 realpath
 - 跨进程文件锁防并发（execute_plan / restore / prune-backups 三入口）

@@ -27,6 +27,7 @@ from ..stores.session_files import (
 from ..support import (
     atomic_write,
     backup_file,
+    backup_operation_slug,
     classify_session_kind,
     file_lock,
     iso_to_epoch,
@@ -71,7 +72,7 @@ def repair_desktop(
     backup_parent = paths.code_dir / "repair_backups"
     if not dry_run:
         prune_old_backups(backup_parent, keep_last=20)
-    backup_root = backup_parent / f"visibility-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
+    backup_root = backup_parent / backup_operation_slug("visibility")
     backed_up: set[str] = set()
     warnings: list[str] = []
 

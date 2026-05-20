@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import closing
-from datetime import datetime, timezone
 from pathlib import Path
 
 from ..models import DedupeResult
@@ -13,7 +12,7 @@ from ..paths import CodexPaths
 from ..services.provider import detect_provider
 from ..stores.index import remove_session_index_entries
 from ..stores.session_files import iter_session_files, read_session_payload
-from ..support import atomic_write, backup_file, long_path, prune_old_backups
+from ..support import atomic_write, backup_file, backup_operation_slug, long_path, prune_old_backups
 
 
 def _is_archived_session(path: Path) -> bool:
@@ -110,6 +109,7 @@ def dedupe_clones(
     active_only: bool = False,
 ) -> DedupeResult:
     provider = detect_provider(paths, explicit=target_provider)
+    state_db = paths.latest_state_db()
     files_checked = 0
     sessions_by_id: dict[str, tuple[Path, dict]] = {}
 
@@ -171,7 +171,7 @@ def dedupe_clones(
 
     backup_parent = paths.code_dir / "repair_backups"
     prune_old_backups(backup_parent, keep_last=20)
-    backup_root = backup_parent / f"dedupe-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
+    backup_root = backup_parent / backup_operation_slug("dedupe")
     backed_up: set[str] = set()
     deleted_session_ids: list[str] = []
     deleted_files: list[Path] = []
@@ -193,7 +193,7 @@ def dedupe_clones(
     deleted_session_id_set = set(deleted_session_ids)
     if deleted_session_id_set:
         remove_session_index_entries(paths.index_file, deleted_session_id_set)
-        _delete_threads_rows(paths.latest_state_db(), deleted_session_id_set)
+        _delete_threads_rows(state_db, deleted_session_id_set)
         _prune_state_file(paths.state_file, deleted_session_id_set)
 
     return DedupeResult(

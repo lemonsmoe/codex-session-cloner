@@ -13,8 +13,9 @@ can make the same well-reasoned choice between:
 The decision logic inspects ``TERM``, ``TERM_PROGRAM``, terminfo's smcup/rmcup
 strings (and ``nrrmc`` flag), tmux's ``alternate-screen`` option, and a small
 allowlist of well-known emulators. Any tool can override per-process via
-``CCC_TUI_SCREEN`` / ``CC_CLEAN_TUI_SCREEN`` / ``CST_TUI_SCREEN`` /
-``CSC_TUI_SCREEN`` set to ``auto`` (default), ``main``, or ``alt``.
+``AIK_TUI_SCREEN`` / ``CCC_TUI_SCREEN`` / ``CC_CLEAN_TUI_SCREEN`` /
+``CST_TUI_SCREEN`` / ``CSC_TUI_SCREEN`` set to ``auto`` (default),
+``main``, or ``alt``.
 """
 
 from __future__ import annotations
@@ -34,6 +35,7 @@ ALT_EXIT_FALLBACK = "\033[?1049l"
 # Honour every sibling tool's env override prefix so a single user setting
 # anywhere coerces all sharing tools to the same screen mode.
 SCREEN_MODE_ENV_NAMES = (
+    "AIK_TUI_SCREEN",
     "CCC_TUI_SCREEN",
     "CC_CLEAN_TUI_SCREEN",
     "CST_TUI_SCREEN",

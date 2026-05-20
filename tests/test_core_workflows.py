@@ -24,7 +24,7 @@ from ai_cli_kit.codex.services.dedupe import dedupe_clones  # noqa: E402
 from ai_cli_kit.codex.services.exporting import export_active_desktop_all, export_session  # noqa: E402
 from ai_cli_kit.codex.services.importing import import_desktop_all, import_session  # noqa: E402
 from ai_cli_kit.codex.services.repair import repair_desktop  # noqa: E402
-from ai_cli_kit.codex.support import machine_label_to_key  # noqa: E402
+from ai_cli_kit.codex.support import backup_operation_slug, machine_label_to_key  # noqa: E402
 from ai_cli_kit.codex.stores.bundles import collect_known_bundle_summaries, latest_distinct_bundle_summaries  # noqa: E402
 from ai_cli_kit.codex.stores.index import load_existing_index, upsert_session_index  # noqa: E402
 from ai_cli_kit.codex.stores.session_files import iter_session_files, read_session_payload  # noqa: E402
@@ -285,6 +285,49 @@ def write_bundle_manifest(
 
 
 class SupportHelperTests(unittest.TestCase):
+    def test_latest_state_db_prefers_higher_numeric_suffix_over_lexicographic_order(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            home = Path(tmpdir) / "home"
+            code_dir = home / ".codex"
+            code_dir.mkdir(parents=True)
+            older = code_dir / "state_9.sqlite"
+            newer = code_dir / "state_10.sqlite"
+            older.write_text("", encoding="utf-8")
+            newer.write_text("", encoding="utf-8")
+            paths = CodexPaths(home=home, cwd=home)
+
+            self.assertEqual(paths.latest_state_db(), newer)
+
+    def test_latest_state_db_refreshes_after_new_db_appears(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            home = Path(tmpdir) / "home"
+            code_dir = home / ".codex"
+            code_dir.mkdir(parents=True)
+            first = code_dir / "state_0001.sqlite"
+            first.write_text("", encoding="utf-8")
+            paths = CodexPaths(home=home, cwd=home)
+
+            self.assertEqual(paths.latest_state_db(), first)
+
+            second = code_dir / "state_0002.sqlite"
+            second.write_text("", encoding="utf-8")
+
+            self.assertEqual(paths.latest_state_db(), second)
+
+    def test_machine_label_to_key_preserves_non_ascii_hostnames(self) -> None:
+        key_a = machine_label_to_key("开发机一号")
+        key_b = machine_label_to_key("开发机二号")
+
+        self.assertEqual(key_a, "开发机一号")
+        self.assertEqual(key_b, "开发机二号")
+        self.assertNotEqual(key_a, "unknown-machine")
+        self.assertNotEqual(key_a, key_b)
+
+    def test_backup_operation_slug_uses_prefix_and_microsecond_timestamp(self) -> None:
+        slug = backup_operation_slug("clean clones")
+
+        self.assertRegex(slug, r"^clean-clones-\d{8}-\d{6}-\d{6}$")
+
     def test_long_path_is_noop_on_posix(self) -> None:
         if os.name == "nt":
             self.skipTest("POSIX-only assertion")

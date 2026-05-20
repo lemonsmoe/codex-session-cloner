@@ -249,7 +249,8 @@ def _remove_empty_archived_dirs(root: Path) -> None:
 
 def clean_archived_sessions(paths: CodexPaths, *, dry_run: bool = False) -> ArchivedCleanupResult:
     archived_files = _archived_rollout_files(paths)
-    archived_thread_ids, db_warnings = _archived_thread_ids_from_db(paths.latest_state_db())
+    state_db = paths.latest_state_db()
+    archived_thread_ids, db_warnings = _archived_thread_ids_from_db(state_db)
     warnings = list(db_warnings)
     errors: list[tuple[Path, str]] = []
 
@@ -312,7 +313,7 @@ def clean_archived_sessions(paths: CodexPaths, *, dry_run: bool = False) -> Arch
     deleted_session_ids = sorted(metadata_session_ids)
     if deleted_session_ids:
         remove_session_index_entries(paths.index_file, set(deleted_session_ids))
-    threads_deleted, delete_warnings = _delete_archived_threads(paths.latest_state_db(), set(deleted_session_ids))
+    threads_deleted, delete_warnings = _delete_archived_threads(state_db, set(deleted_session_ids))
     warnings.extend(delete_warnings)
     global_state_pruned, state_warnings = _prune_global_state(paths.state_file, set(deleted_session_ids))
     warnings.extend(state_warnings)

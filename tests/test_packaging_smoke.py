@@ -1,6 +1,8 @@
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -150,6 +152,53 @@ class PackagingSmokeTests(unittest.TestCase):
         self.assertIn("Usage: ./install.sh", result.stdout)
         self.assertIn("--editable", result.stdout)
 
+    def test_unix_install_force_refuses_to_delete_project_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            fake_root = Path(tmp_dir) / "project"
+            (fake_root / "scripts" / "install").mkdir(parents=True)
+            shutil.copy2(ROOT_DIR / "install.sh", fake_root / "install.sh")
+            shutil.copy2(
+                ROOT_DIR / "scripts" / "install" / "install.unix.sh",
+                fake_root / "scripts" / "install" / "install.unix.sh",
+            )
+
+            result = subprocess.run(
+                ["sh", "./install.sh", "--force", "--python", sys.executable],
+                cwd=fake_root,
+                env={**_module_env(), "VENV_DIR": str(fake_root)},
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("refusing to delete project root", result.stdout)
+            self.assertTrue((fake_root / "install.sh").exists())
+
+    def test_unix_install_force_refuses_to_delete_project_ancestor(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            parent_root = Path(tmp_dir) / "workspace"
+            fake_root = parent_root / "project"
+            (fake_root / "scripts" / "install").mkdir(parents=True)
+            shutil.copy2(ROOT_DIR / "install.sh", fake_root / "install.sh")
+            shutil.copy2(
+                ROOT_DIR / "scripts" / "install" / "install.unix.sh",
+                fake_root / "scripts" / "install" / "install.unix.sh",
+            )
+
+            result = subprocess.run(
+                ["sh", "./install.sh", "--force", "--python", sys.executable],
+                cwd=fake_root,
+                env={**_module_env(), "VENV_DIR": str(parent_root)},
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("project root or ancestor", result.stdout)
+            self.assertTrue((fake_root / "install.sh").exists())
+
     def test_release_script_help_runs(self) -> None:
         result = subprocess.run(
             ["sh", "./release.sh", "--help"],
@@ -162,6 +211,19 @@ class PackagingSmokeTests(unittest.TestCase):
         )
         self.assertIn("Usage: ./release.sh", result.stdout)
         self.assertIn("--output-dir", result.stdout)
+
+    def test_release_script_rejects_unsafe_version_label(self) -> None:
+        result = subprocess.run(
+            ["sh", "./release.sh", "--version", "../oops"],
+            cwd=ROOT_DIR,
+            env=_module_env(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("unsafe characters", result.stdout)
 
 
 if __name__ == "__main__":

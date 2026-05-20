@@ -11,7 +11,11 @@ from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Tupl
 from ..core.support import atomic_write
 from .models import ExecutionRecord, ExecutionSummary, RunOptions
 from .paths import ClaudePaths
-from .services import _backup_file_copy, _ensure_backup_root as _services_ensure_backup_root
+from .services import (
+    _backup_file_copy,
+    _ensure_backup_root as _services_ensure_backup_root,
+    list_backup_roots,
+)
 
 DEFAULT_CLAUDE_PROMPT = "Reply with a single word: ok"
 
@@ -150,9 +154,7 @@ def load_old_identifier_snapshot(
         candidates.append(Path(backup_root_hint).expanduser())
 
     if paths.backup_root_base.exists():
-        for child in sorted(paths.backup_root_base.iterdir(), reverse=True):
-            if child.is_dir():
-                candidates.append(child)
+        candidates.extend(list_backup_roots(paths))
 
     for candidate in candidates:
         snapshot = _load_identifier_snapshot(candidate / ".claude.json", candidate / ".claude" / "statsig")

@@ -70,6 +70,20 @@ class AikDispatchTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("unknown tool", result.stdout)
 
+    def test_unknown_top_level_option_exits_nonzero_with_hint(self) -> None:
+        result = subprocess.run(
+            [sys.executable, "-m", "ai_cli_kit", "--bogus"],
+            cwd=ROOT_DIR,
+            env=_module_env(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("unknown option", result.stdout)
+        self.assertIn("Usage:  aik <tool>", result.stdout)
+
     def test_dispatch_to_codex_help_uses_codex_parser(self) -> None:
         result = subprocess.run(
             [sys.executable, "-m", "ai_cli_kit", "codex", "--help"],
@@ -195,6 +209,42 @@ class HubLogoTests(unittest.TestCase):
 
         self.assertEqual(captured.get("env_during"), "1", "AIK_HUB_ACTIVE not set during sub-tool")
         self.assertNotIn("AIK_HUB_ACTIVE", os.environ, "AIK_HUB_ACTIVE leaked after sub-tool exit")
+
+    def test_run_hub_uses_resolved_screen_mode_sequences(self) -> None:
+        if str(SRC_DIR) not in sys.path:
+            sys.path.insert(0, str(SRC_DIR))
+        import io
+
+        from ai_cli_kit import cli as cli_mod
+        from ai_cli_kit.core.tui.screen_mode import ScreenModeDecision
+
+        original_stdout = sys.stdout
+        original_windows_vt_ok = cli_mod._WINDOWS_VT_OK
+        original_resolve_screen_mode = cli_mod.resolve_screen_mode
+        original_read_key = cli_mod.read_key
+
+        buffer = io.StringIO()
+        sys.stdout = buffer
+        cli_mod._WINDOWS_VT_OK = True
+        cli_mod.resolve_screen_mode = lambda: ScreenModeDecision(
+            requested="main",
+            resolved="main",
+            reason="test",
+            enter_sequence="ENTER",
+            exit_sequence="EXIT",
+        )
+        cli_mod.read_key = lambda timeout_ms=None: "ESC"
+        try:
+            rc = cli_mod._run_hub()
+        finally:
+            sys.stdout = original_stdout
+            cli_mod._WINDOWS_VT_OK = original_windows_vt_ok
+            cli_mod.resolve_screen_mode = original_resolve_screen_mode
+            cli_mod.read_key = original_read_key
+
+        self.assertEqual(rc, 0)
+        self.assertTrue(buffer.getvalue().startswith("ENTER"))
+        self.assertTrue(buffer.getvalue().endswith("EXIT"))
 
     def test_hub_cards_are_horizontally_centred(self) -> None:
         """Cards must have non-trivial left padding on a wide terminal.
@@ -410,6 +460,49 @@ class CodexSubflowCenteringTests(unittest.TestCase):
         self.assertEqual(len(content), 2)
         indents = {len(ln) - len(ln.lstrip(" ")) for ln in content}
         self.assertEqual(len(indents), 1, f"non-uniform indent after CRLF: {indents}")
+
+    def test_codex_tui_uses_resolved_screen_mode_sequences_when_not_in_hub(self) -> None:
+        if str(SRC_DIR) not in sys.path:
+            sys.path.insert(0, str(SRC_DIR))
+        import io
+
+        from ai_cli_kit.codex.tui import app as codex_app
+        from ai_cli_kit.codex.tui.app import ToolkitAppContext, ToolkitTuiApp
+        from ai_cli_kit.core.tui.screen_mode import ScreenModeDecision
+
+        ctx = ToolkitAppContext(
+            target_provider="demo",
+            active_sessions_dir="/tmp/demo-sessions",
+            config_path="/tmp/demo-config.toml",
+        )
+        app = ToolkitTuiApp(
+            ctx,
+            screen_mode=ScreenModeDecision(
+                requested="main",
+                resolved="main",
+                reason="test",
+                enter_sequence="ENTER",
+                exit_sequence="EXIT",
+            ),
+        )
+
+        original_stdout = sys.stdout
+        original_windows_vt_ok = codex_app._WINDOWS_VT_OK
+        original_read_key = codex_app.read_key
+        buffer = io.StringIO()
+        sys.stdout = buffer
+        codex_app._WINDOWS_VT_OK = True
+        codex_app.read_key = lambda timeout_ms=None: "ESC"
+        try:
+            rc = app.run()
+        finally:
+            sys.stdout = original_stdout
+            codex_app._WINDOWS_VT_OK = original_windows_vt_ok
+            codex_app.read_key = original_read_key
+
+        self.assertEqual(rc, 0)
+        self.assertTrue(buffer.getvalue().startswith("ENTER"))
+        self.assertTrue(buffer.getvalue().endswith("EXIT"))
 
     def test_hub_alt_screen_guarded_by_windows_vt(self) -> None:
         """Regression guard: legacy Windows cmd.exe (where _WINDOWS_VT_OK=False)

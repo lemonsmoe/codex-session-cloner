@@ -367,6 +367,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     if args.command == "prune-backups":
         keep = int(args.keep)
+        if keep <= 0:
+            if output_format == "json":
+                print(json.dumps(
+                    {"command": "prune-backups", "status": "error",
+                     "error": "--keep must be greater than 0"},
+                    ensure_ascii=False, indent=2))
+            else:
+                print("参数错误：--keep 必须大于 0。", file=sys.stderr)
+            return 2
         before = list_backup_roots(paths)
         # R7 pass-4 H2: prune-backups is destructive (rmtree) — apply
         # the same --yes / --dry-run guards as clean/restore.

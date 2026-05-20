@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-import functools
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
+
+_STATE_DB_NAME_RE = re.compile(r"^state_(\d+)\.sqlite$")
 
 
 @dataclass(frozen=True)
@@ -61,7 +63,28 @@ class CodexPaths:
     def legacy_desktop_bundle_root(self) -> Path:
         return self.local_bundle_workspace / "desktop_bundles"
 
-    @functools.lru_cache(maxsize=1)
     def latest_state_db(self) -> Optional[Path]:
-        matches = sorted(self.code_dir.glob("state_*.sqlite"))
-        return matches[-1] if matches else None
+        """Return the newest Desktop state DB using a stable, refreshable key.
+
+        Older revisions memoized the first lookup and picked the lexicographic
+        last filename. That fails in two real cases:
+        1. ``state_10.sqlite`` sorts before ``state_9.sqlite`` lexicographically.
+        2. A long-lived TUI session keeps returning a stale DB after Desktop
+           rotates from ``state_0001.sqlite`` to ``state_0002.sqlite``.
+
+        Prefer the numeric suffix when present, then mtime, then filename as a
+        deterministic tie-breaker. Recompute on every call so callers see
+        rotation that happens after process start.
+        """
+        candidates: list[tuple[int, int, str, Path]] = []
+        for candidate in self.code_dir.glob("state_*.sqlite"):
+            try:
+                stat = candidate.stat()
+            except OSError:
+                continue
+            match = _STATE_DB_NAME_RE.match(candidate.name)
+            numeric_rank = int(match.group(1)) if match else -1
+            candidates.append((numeric_rank, stat.st_mtime_ns, candidate.name, candidate))
+        if not candidates:
+            return None
+        return max(candidates)[-1]

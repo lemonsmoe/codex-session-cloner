@@ -425,6 +425,40 @@ class CleanupWorkflowTests(unittest.TestCase):
             self.assertEqual(mocked_run.call_args.kwargs["timeout"], 12)
             self.assertTrue(any(record.key == "refresh_claude" for record in summary.records))
 
+    def test_remap_history_prefers_newest_backup_root_by_creation_identity_not_touched_mtime(self) -> None:
+        import os as _os
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            home = Path(tmp_dir)
+            paths = default_paths(home)
+            paths.claude_dir.mkdir(parents=True)
+            paths.statsig_dir.mkdir(parents=True)
+            paths.projects_dir.mkdir(parents=True)
+            paths.backup_root_base.mkdir(parents=True)
+
+            paths.state_file.write_text(json.dumps({"userID": "current-user"}), encoding="utf-8")
+            project_file = paths.projects_dir / "session.json"
+            project_file.write_text(json.dumps({"userID": "newer-old-user"}), encoding="utf-8")
+
+            newer_backup_root = paths.backup_root_base / "20250101-000000-000002-bbbb"
+            older_backup_root = paths.backup_root_base / "20250101-000000-000001-aaaa"
+            for root, user_id, ts in (
+                (newer_backup_root, "newer-old-user", 1_000),
+                (older_backup_root, "older-old-user", 2_000),
+            ):
+                root.mkdir()
+                (root / ".claude.json").write_text(json.dumps({"userID": user_id}), encoding="utf-8")
+                _os.utime(root, (ts, ts))
+
+            summary = remap_history_identifiers(
+                paths,
+                options=RunOptions(backup_enabled=False, dry_run=False),
+            )
+
+            payload = json.loads(project_file.read_text(encoding="utf-8"))
+            self.assertEqual(payload["userID"], "current-user")
+            self.assertTrue(any(record.status == "updated" for record in summary.records))
+
 
 class StateFullIdentityScrubTests(unittest.TestCase):
     """Deep PII scrub of ~/.claude.json — covers oauthAccount + nested keys."""
@@ -591,6 +625,45 @@ class BackupRestoreTests(unittest.TestCase):
 
 
 class PruneBackupsTests(unittest.TestCase):
+    def test_list_backup_roots_ignores_later_mtime_touch_on_older_named_root(self) -> None:
+        from ai_cli_kit.claude.services import list_backup_roots
+        import os as _os
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            home = Path(tmp_dir)
+            paths = default_paths(home)
+            paths.backup_root_base.mkdir(parents=True)
+
+            newer = paths.backup_root_base / "20250101-000000-000002-bbbb"
+            older = paths.backup_root_base / "20250101-000000-000001-aaaa"
+            newer.mkdir()
+            older.mkdir()
+            _os.utime(newer, (1_000, 1_000))
+            _os.utime(older, (2_000, 2_000))
+
+            roots = list_backup_roots(paths)
+            self.assertEqual(roots[:2], (newer, older))
+
+    def test_list_backup_roots_uses_name_as_stable_tiebreaker_when_mtime_matches(self) -> None:
+        from ai_cli_kit.claude.services import list_backup_roots
+        import os as _os
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            home = Path(tmp_dir)
+            paths = default_paths(home)
+            paths.backup_root_base.mkdir(parents=True)
+
+            older = paths.backup_root_base / "20250101-000000-000001-aaaa"
+            newer = paths.backup_root_base / "20250101-000000-000002-bbbb"
+            older.mkdir()
+            newer.mkdir()
+            shared_ts = 1_700_000_000
+            _os.utime(older, (shared_ts, shared_ts))
+            _os.utime(newer, (shared_ts, shared_ts))
+
+            roots = list_backup_roots(paths)
+            self.assertEqual(roots[:2], (newer, older))
+
     def test_prune_keeps_only_newest_n_roots(self) -> None:
         from ai_cli_kit.claude.services import prune_backup_roots, list_backup_roots
         import os as _os
@@ -1340,6 +1413,18 @@ class CliEndToEndTests(unittest.TestCase):
             self.assertEqual(payload["keep"], 2)
             self.assertEqual(len(payload["removed"]), 2)
             self.assertEqual(payload["failed"], [])
+
+    def test_prune_backups_rejects_non_positive_keep_in_json_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            home = Path(tmp_dir)
+            rc, output = self._capture_main(
+                ["--home", str(home), "prune-backups", "--keep", "0", "--yes", "--format", "json"]
+            )
+            self.assertEqual(rc, 2)
+            payload = json.loads(output)
+            self.assertEqual(payload["command"], "prune-backups")
+            self.assertEqual(payload["status"], "error")
+            self.assertIn("--keep", payload["error"])
 
     def test_debug_paths_json_dumps_full_layout(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

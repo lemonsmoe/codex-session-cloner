@@ -12,7 +12,7 @@ from ..errors import ToolkitError
 from ..models import CleanupResult, CloneFileResult, CloneRunResult
 from ..paths import CodexPaths
 from ..services.provider import detect_provider
-from ..support import atomic_write, backup_file, prune_old_backups
+from ..support import atomic_write, backup_file, backup_operation_slug, prune_old_backups
 from ..stores.session_files import (
     build_canonical_clone_path,
     extract_session_id_from_filename,
@@ -227,7 +227,7 @@ def cleanup_clones(
         # unrecoverable. Mirrors dedupe_clones.
         backup_parent = paths.code_dir / "repair_backups"
         prune_old_backups(backup_parent, keep_last=20)
-        backup_root = backup_parent / f"clean-clones-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
+        backup_root = backup_parent / backup_operation_slug("clean-clones")
         backed_up: set[str] = set()
         for target_path in files_to_delete:
             try:

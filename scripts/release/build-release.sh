@@ -84,6 +84,21 @@ if [ -z "$VERSION" ]; then
   )"
 fi
 
+validate_version() {
+  case "$1" in
+    "")
+      echo "Error: version must not be empty." >&2
+      exit 2
+      ;;
+    *[!A-Za-z0-9._+-]*)
+      echo "Error: version contains unsafe characters: $1" >&2
+      exit 2
+      ;;
+  esac
+}
+
+validate_version "$VERSION"
+
 ARCHIVE_ROOT="ai-cli-kit-${VERSION}"
 STAGE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ai-cli-kit-release.XXXXXX")"
 RELEASE_DIR="$STAGE_DIR/$ARCHIVE_ROOT"
