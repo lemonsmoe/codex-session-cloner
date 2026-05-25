@@ -3,6 +3,7 @@ import subprocess
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -14,6 +15,8 @@ from ai_cli_kit.codex import APP_COMMAND, __version__  # noqa: E402
 from ai_cli_kit.codex.cli import create_arg_parser  # noqa: E402
 from ai_cli_kit.codex.tui.app import (  # noqa: E402
     ToolkitAppContext,
+    ToolkitTuiApp,
+    TuiMenuAction,
     build_tui_menu_actions,
     build_tui_menu_sections,
 )
@@ -117,6 +120,28 @@ class PackagingSmokeTests(unittest.TestCase):
             expected_numeric_order,
         )
         self.assertEqual(by_id["clone_dry"].hotkey, "r")
+
+    def test_tui_promote_session_command_prompts_for_provider(self) -> None:
+        context = ToolkitAppContext(
+            target_provider="openai",
+            active_sessions_dir="/tmp/demo-sessions",
+            config_path="/tmp/demo-config.toml",
+        )
+        app = ToolkitTuiApp(context)
+        action = TuiMenuAction(
+            "promote_session",
+            "8",
+            "修复指定对话可见性",
+            "repair",
+            ("promote-session", "<session_id>"),
+        )
+
+        with mock.patch.object(app, "_prompt_value", side_effect=["session-123", "right_code"]), \
+                mock.patch("ai_cli_kit.codex.tui.app.detect_session_provider", return_value="right_code"):
+            action_name, args = app._resolve_menu_action_request(action)
+
+        self.assertEqual(args, ["promote-session", "session-123", "right_code"])
+        self.assertIn("right_code", action_name)
 
     def test_logo_font_covers_toolkit_wordmark(self) -> None:
         missing = {ch for ch in "CODEX SESSION TOOLKIT" if ch != " " and ch not in LOGO_FONT_BANNER}

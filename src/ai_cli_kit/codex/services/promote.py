@@ -66,7 +66,6 @@ def promote_session(
     if not paths.code_dir.is_dir():
         raise ToolkitError(f"Missing Codex data directory: {paths.code_dir}")
 
-    provider = detect_provider(paths, explicit=target_provider)
     session_file = find_session_file(paths, session_id)
     if session_file is None:
         raise ToolkitError(f"Session file not found: {session_id}")
@@ -95,6 +94,11 @@ def promote_session(
 
     if session_meta is None:
         raise ToolkitError(f"{session_file}: session_meta not found")
+
+    session_provider = session_meta.get("model_provider")
+    provider = target_provider or (session_provider.strip() if isinstance(session_provider, str) and session_provider.strip() else "")
+    if not provider:
+        provider = detect_provider(paths)
 
     payload_id = session_meta.get("id")
     if payload_id != session_id:

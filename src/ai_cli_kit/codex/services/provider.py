@@ -128,6 +128,20 @@ def _provider_from_recent_sessions(paths: CodexPaths) -> tuple[str, float]:
     return provider, mtime
 
 
+def detect_session_provider(paths: CodexPaths, session_id: str) -> str:
+    """Return the model_provider stored in a specific session file, if present."""
+    from ..stores.session_files import find_session_file, read_session_payload
+
+    session_file = find_session_file(paths, session_id)
+    if session_file is None:
+        return ""
+    try:
+        payload = read_session_payload(session_file)
+    except ToolkitError:
+        return ""
+    return _nonempty_str(payload.get("model_provider"))
+
+
 def detect_provider(paths: CodexPaths, explicit: str = "") -> str:
     if explicit:
         return explicit

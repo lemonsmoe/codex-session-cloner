@@ -25,6 +25,7 @@ from ..presenters.reports import (
 )
 from ..services.browse import get_session_summaries
 from ..services.clone import cleanup_clones, clone_to_provider
+from ..services.provider import detect_session_provider
 from ..stores.bundles import (
     EXPORT_GROUP_ORDER,
     bundle_export_group_label,
@@ -1351,7 +1352,24 @@ class ToolkitTuiApp:
             )
             if not session_id:
                 return None, None
-            return f"修复指定对话可见性 {session_id}", ["promote-session", session_id]
+            paths = CodexPaths()
+            session_provider = detect_session_provider(paths, session_id)
+            config_provider = self.context.target_provider
+            default_provider = session_provider or config_provider
+            provider = self._prompt_value(
+                title="选择 promote-session provider",
+                prompt_label="Provider",
+                help_lines=[
+                    f"当前配置识别 provider: {config_provider or '-'}",
+                    f"目标 session 文件 provider: {session_provider or '-'}",
+                    "默认使用 session 文件 provider。可输入 right_code、openai 或其他 provider 覆盖。",
+                ],
+                default=default_provider,
+                allow_empty=False,
+            )
+            if not provider:
+                return None, None
+            return f"修复指定对话可见性 {session_id} ({provider})", ["promote-session", session_id, provider]
 
         return action_name, cli_args
 

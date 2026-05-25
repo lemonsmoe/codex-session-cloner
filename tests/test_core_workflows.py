@@ -1814,6 +1814,80 @@ class CoreWorkflowTests(unittest.TestCase):
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
 
+    def test_promote_session_defaults_to_session_file_provider(self) -> None:
+        tmpdir = tempfile.mkdtemp()
+        try:
+            workspace = Path(tmpdir) / "workspace"
+            home = Path(tmpdir) / "home"
+            workspace.mkdir()
+            write_config(home, "openai")
+            write_state_file(home)
+            create_threads_db(home)
+            project_cwd = workspace / "project-promote-session-provider"
+            project_cwd.mkdir()
+
+            session_id = "bbbbbbbb-5555-4000-8000-000000000001"
+            write_session(
+                home,
+                session_id,
+                provider="right_code",
+                source="vscode",
+                originator="Codex Desktop",
+                cwd=project_cwd,
+                user_message="promote with session provider",
+            )
+
+            paths = CodexPaths(home=home, cwd=workspace)
+            result = promote_session(paths, session_id, dry_run=False)
+
+            self.assertEqual(result.provider, "right_code")
+            self.assertFalse(result.retagged)
+            payload = read_session_payload(result.session_file)
+            self.assertEqual(payload["model_provider"], "right_code")
+            conn = sqlite3.connect(home / ".codex" / "state_0001.sqlite")
+            db_provider = conn.execute("select model_provider from threads where id = ?", (session_id,)).fetchone()[0]
+            conn.close()
+            self.assertEqual(db_provider, "right_code")
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def test_promote_session_explicit_provider_overrides_session_file_provider(self) -> None:
+        tmpdir = tempfile.mkdtemp()
+        try:
+            workspace = Path(tmpdir) / "workspace"
+            home = Path(tmpdir) / "home"
+            workspace.mkdir()
+            write_config(home, "openai")
+            write_state_file(home)
+            create_threads_db(home)
+            project_cwd = workspace / "project-promote-explicit-provider"
+            project_cwd.mkdir()
+
+            session_id = "cccccccc-5555-4000-8000-000000000001"
+            write_session(
+                home,
+                session_id,
+                provider="right_code",
+                source="vscode",
+                originator="Codex Desktop",
+                cwd=project_cwd,
+                user_message="promote with explicit provider",
+            )
+
+            paths = CodexPaths(home=home, cwd=workspace)
+            result = promote_session(paths, session_id, target_provider="openai", dry_run=False)
+
+            self.assertEqual(result.provider, "openai")
+            self.assertTrue(result.retagged)
+            payload = read_session_payload(result.session_file)
+            self.assertEqual(payload["model_provider"], "openai")
+            conn = sqlite3.connect(home / ".codex" / "state_0001.sqlite")
+            db_provider = conn.execute("select model_provider from threads where id = ?", (session_id,)).fetchone()[0]
+            conn.close()
+            self.assertEqual(db_provider, "openai")
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
     def test_switch_provider_retags_in_place_and_creates_restore_backup(self) -> None:
         tmpdir = tempfile.mkdtemp()
         try:

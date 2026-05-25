@@ -131,7 +131,12 @@ def create_parser() -> argparse.ArgumentParser:
 
     promote_parser = subparsers.add_parser("promote-session", help="Force one session into Desktop visibility state")
     promote_parser.add_argument("session_id")
-    promote_parser.add_argument("target_provider", nargs="?", default="", help="Optional provider override")
+    promote_parser.add_argument(
+        "target_provider",
+        nargs="?",
+        default="",
+        help="Optional provider override; defaults to the session file model_provider",
+    )
     promote_parser.add_argument("--dry-run", action="store_true")
 
     switch_parser = subparsers.add_parser("switch-provider", help="Retag Desktop sessions in-place to the target provider")
