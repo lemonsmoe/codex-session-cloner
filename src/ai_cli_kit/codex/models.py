@@ -99,6 +99,30 @@ class PromoteSessionResult:
 
 
 @dataclass(frozen=True)
+class SessionHistoryRepairResult:
+    provider: str
+    session_id: str
+    dry_run: bool
+    original_session_file: Path
+    target_session_id: str
+    target_session_file: Path
+    line_count: int
+    user_message_count: int
+    assistant_message_count: int
+    response_item_count: int
+    event_msg_count: int
+    current_rollout_path: str
+    current_provider: str
+    needs_rebuild: bool
+    rebuilt: bool
+    index_upserted: bool
+    thread_upserted: bool
+    state_updated: bool
+    backup_root: Optional[Path] = None
+    warnings: List[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
 class ValidationReport:
     source_group: str
     results: List[BundleValidationResult]

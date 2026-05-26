@@ -78,6 +78,7 @@ class PackagingSmokeTests(unittest.TestCase):
                 "dedupe",
                 "dedupe_dry",
                 "promote_session",
+                "repair_session_history",
                 "repair_desktop",
                 "repair_desktop_dry",
                 "repair_desktop_cli",
@@ -113,10 +114,11 @@ class PackagingSmokeTests(unittest.TestCase):
             ("dedupe", "6"),
             ("dedupe_dry", "7"),
             ("promote_session", "8"),
-            ("clone", "9"),
+            ("repair_session_history", "9"),
+            ("clone", "a"),
         ]
         self.assertEqual(
-            [(action.action_id, action.hotkey) for action in repair_actions[:9]],
+            [(action.action_id, action.hotkey) for action in repair_actions[:10]],
             expected_numeric_order,
         )
         self.assertEqual(by_id["clone_dry"].hotkey, "r")
@@ -141,6 +143,29 @@ class PackagingSmokeTests(unittest.TestCase):
             action_name, args = app._resolve_menu_action_request(action)
 
         self.assertEqual(args, ["promote-session", "session-123", "right_code"])
+        self.assertIn("right_code", action_name)
+
+    def test_tui_repair_session_history_command_can_request_rebuild(self) -> None:
+        context = ToolkitAppContext(
+            target_provider="openai",
+            active_sessions_dir="/tmp/demo-sessions",
+            config_path="/tmp/demo-config.toml",
+        )
+        app = ToolkitTuiApp(context)
+        action = TuiMenuAction(
+            "repair_session_history",
+            "9",
+            "修复指定对话历史",
+            "repair",
+            ("repair-session-history", "<session_id>"),
+        )
+
+        with mock.patch.object(app, "_prompt_value", side_effect=["session-123", "right_code"]), \
+                mock.patch.object(app, "_confirm_toggle", return_value=True), \
+                mock.patch("ai_cli_kit.codex.tui.app.detect_session_provider", return_value="right_code"):
+            action_name, args = app._resolve_menu_action_request(action)
+
+        self.assertEqual(args, ["repair-session-history", "session-123", "right_code", "--rebuild-clone"])
         self.assertIn("right_code", action_name)
 
     def test_logo_font_covers_toolkit_wordmark(self) -> None:

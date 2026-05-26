@@ -15,6 +15,7 @@ from ..models import (
     ExportResult,
     ImportResult,
     PromoteSessionResult,
+    SessionHistoryRepairResult,
     RepairResult,
     RestoreBackupResult,
     SessionSummary,
@@ -157,6 +158,32 @@ def print_promote_session_result(result: PromoteSessionResult) -> int:
     print(f"Retagged provider: {'yes' if result.retagged else 'no'}")
     print(f"Converted to Desktop metadata: {'yes' if result.converted_to_desktop else 'no'}")
     print(f"Workspace root: {result.workspace_root or '-'}")
+    if result.backup_root is not None:
+        print(f"Backup directory: {result.backup_root}")
+    for warning in result.warnings:
+        print(warning, file=sys.stderr)
+    return 0
+
+
+def print_session_history_repair_result(result: SessionHistoryRepairResult) -> int:
+    print(f"Target Provider: {result.provider}")
+    print(f"Session id: {result.session_id}")
+    print(f"Target session id: {result.target_session_id}")
+    print(f"Dry run: {'yes' if result.dry_run else 'no'}")
+    print(f"Original session file: {result.original_session_file}")
+    print(f"Target session file: {result.target_session_file}")
+    print(f"JSONL lines: {result.line_count}")
+    print(f"User messages: {result.user_message_count}")
+    print(f"Assistant messages: {result.assistant_message_count}")
+    print(f"response_item records: {result.response_item_count}")
+    print(f"event_msg records: {result.event_msg_count}")
+    print(f"Current threads.rollout_path: {result.current_rollout_path or '-'}")
+    print(f"Current threads.model_provider: {result.current_provider or '-'}")
+    print(f"Needs clean clone rebuild: {'yes' if result.needs_rebuild else 'no'}")
+    print(f"Clean clone rebuilt: {'yes' if result.rebuilt else 'no'}")
+    print(f"Index upserted: {'yes' if result.index_upserted else 'no'}")
+    print(f"Threads table upserted: {'yes' if result.thread_upserted else 'no'}")
+    print(f"Desktop state updated: {'yes' if result.state_updated else 'no'}")
     if result.backup_root is not None:
         print(f"Backup directory: {result.backup_root}")
     for warning in result.warnings:

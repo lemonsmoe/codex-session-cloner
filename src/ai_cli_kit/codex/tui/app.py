@@ -133,6 +133,7 @@ TUI_ACTION_NOTES = {
     "repair_desktop": ["对齐 provider、重建 session_index、补 threads 表与工作区根目录。"],
     "repair_desktop_dry": ["只预览将修改哪些会话和索引，不真正写入。"],
     "promote_session": ["输入一个 session id，强制补齐它的 index / threads / workspace 可见性。"],
+    "repair_session_history": ["输入一个 session id，校验并修复 Desktop 历史注册，必要时可重建 clean clone。"],
     "repair_desktop_cli": ["会把旧 CLI 线程改写成 Desktop 兼容元数据。"],
     "repair_desktop_cli_dry": ["预览哪些 CLI 线程会被纳入 Desktop 视图。"],
     "exit": ["退出工具箱。"],
@@ -175,7 +176,8 @@ def build_tui_menu_actions() -> List[TuiMenuAction]:
         TuiMenuAction("dedupe", "6", "清理重复谱系（内容安全去重）", "repair", ("dedupe-clones",), is_dangerous=True),
         TuiMenuAction("dedupe_dry", "7", "模拟清理重复谱系", "repair", ("dedupe-clones", "--dry-run"), is_dangerous=True, is_dry_run=True),
         TuiMenuAction("promote_session", "8", "修复指定对话可见性", "repair", ("promote-session", "<session_id>")),
-        TuiMenuAction("clone", "9", "克隆到当前 provider", "repair", ("clone-provider",)),
+        TuiMenuAction("repair_session_history", "9", "修复指定对话历史", "repair", ("repair-session-history", "<session_id>")),
+        TuiMenuAction("clone", "a", "克隆到当前 provider", "repair", ("clone-provider",)),
         TuiMenuAction("clone_dry", "r", "模拟克隆（Dry-run）", "repair", ("clone-provider", "--dry-run"), is_dry_run=True),
         TuiMenuAction("clean", "d", "清理旧版无标记副本", "repair", ("clean-clones",), is_dangerous=True),
         TuiMenuAction("clean_dry", "n", "模拟清理旧版副本", "repair", ("clean-clones", "--dry-run"), is_dangerous=True, is_dry_run=True),
@@ -1371,6 +1373,48 @@ class ToolkitTuiApp:
                 return None, None
             return f"修复指定对话可见性 {session_id} ({provider})", ["promote-session", session_id, provider]
 
+        if menu_action.action_id == "repair_session_history":
+            session_id = self._prompt_value(
+                title="修复指定对话历史",
+                prompt_label="输入 session id",
+                help_lines=[
+                    "会校验 JSONL 历史、threads.rollout_path、provider、cwd 与 Desktop 状态。",
+                    "默认先做安全注册修复；如果历史仍不显示，可选择重建干净 Desktop clone。",
+                ],
+                allow_empty=False,
+            )
+            if not session_id:
+                return None, None
+            paths = CodexPaths()
+            session_provider = detect_session_provider(paths, session_id)
+            config_provider = self.context.target_provider
+            default_provider = session_provider or config_provider
+            provider = self._prompt_value(
+                title="选择 repair-session-history provider",
+                prompt_label="Provider",
+                help_lines=[
+                    f"当前配置识别 provider: {config_provider or '-'}",
+                    f"目标 session 文件 provider: {session_provider or '-'}",
+                    "默认使用 session 文件 provider。可输入 right_code、openai 或其他 provider 覆盖。",
+                ],
+                default=default_provider,
+                allow_empty=False,
+            )
+            if not provider:
+                return None, None
+            rebuild = self._confirm_toggle(
+                title="是否重建干净历史 clone",
+                question="是否创建新的 clean Desktop session clone",
+                yes_label="y",
+                no_label="n",
+                default_yes=False,
+            )
+            args = ["repair-session-history", session_id, provider]
+            if rebuild:
+                args.append("--rebuild-clone")
+            suffix = " rebuild" if rebuild else ""
+            return f"修复指定对话历史 {session_id} ({provider}){suffix}", args
+
         return action_name, cli_args
 
     def _tui_help_text(self) -> None:
@@ -1385,6 +1429,7 @@ class ToolkitTuiApp:
             "  switch-provider               原地切换 Desktop 会话到当前 provider",
             "  restore-backup <backup_dir>   从 repair/switch 备份目录恢复",
             "  promote-session <session_id>  修复指定对话的 Desktop 可见性",
+            "  repair-session-history <session_id>  修复指定对话的 Desktop 历史注册",
             "  clone-provider                克隆活动会话到当前 provider",
             "  clean-clones                  清理旧版无标记副本",
             "  list [pattern]                列出本机会话",

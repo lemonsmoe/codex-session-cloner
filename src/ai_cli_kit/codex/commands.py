@@ -22,6 +22,7 @@ from .presenters.reports import (
     print_promote_session_result,
     print_repair_result,
     print_restore_backup_result,
+    print_session_history_repair_result,
     print_session_rows,
     print_switch_result,
     print_validation_report,
@@ -31,6 +32,7 @@ from .services.clone import cleanup_clones, clone_to_provider
 from .services.dedupe import dedupe_clones
 from .services.exporting import export_active_desktop_all, export_cli_all, export_desktop_all, export_session
 from .services.importing import import_desktop_all, import_session
+from .services.history_repair import repair_session_history
 from .services.promote import promote_session
 from .services.repair import repair_desktop
 from .services.switching import restore_repair_backup, switch_provider
@@ -139,6 +141,17 @@ def create_parser() -> argparse.ArgumentParser:
     )
     promote_parser.add_argument("--dry-run", action="store_true")
 
+    history_parser = subparsers.add_parser("repair-session-history", help="Repair one session's Desktop history registration")
+    history_parser.add_argument("session_id")
+    history_parser.add_argument(
+        "target_provider",
+        nargs="?",
+        default="",
+        help="Optional provider override; defaults to the session file model_provider",
+    )
+    history_parser.add_argument("--dry-run", action="store_true")
+    history_parser.add_argument("--rebuild-clone", action="store_true", help="Create a clean Desktop session clone")
+
     switch_parser = subparsers.add_parser("switch-provider", help="Retag Desktop sessions in-place to the target provider")
     switch_parser.add_argument("target_provider", nargs="?", default="", help="Optional provider override")
     switch_parser.add_argument("--dry-run", action="store_true")
@@ -235,6 +248,16 @@ def run_cli(argv: Sequence[str], *, paths: Optional[CodexPaths] = None) -> int:
                 args.session_id,
                 target_provider=args.target_provider,
                 dry_run=args.dry_run,
+            )
+        )
+    if args.command == "repair-session-history":
+        return print_session_history_repair_result(
+            repair_session_history(
+                paths,
+                args.session_id,
+                target_provider=args.target_provider,
+                dry_run=args.dry_run,
+                rebuild_clone=args.rebuild_clone,
             )
         )
     if args.command == "switch-provider":

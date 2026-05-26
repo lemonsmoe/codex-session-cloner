@@ -23,6 +23,7 @@ from ai_cli_kit.codex.services.browse import get_bundle_summaries, get_session_s
 from ai_cli_kit.codex.services.clone import build_clone_index, clone_to_provider  # noqa: E402
 from ai_cli_kit.codex.services.dedupe import dedupe_clones  # noqa: E402
 from ai_cli_kit.codex.services.exporting import export_active_desktop_all, export_session  # noqa: E402
+from ai_cli_kit.codex.services.history_repair import repair_session_history  # noqa: E402
 from ai_cli_kit.codex.services.importing import import_desktop_all, import_session  # noqa: E402
 from ai_cli_kit.codex.services.promote import promote_session  # noqa: E402
 from ai_cli_kit.codex.services.provider import detect_provider  # noqa: E402
@@ -213,6 +214,39 @@ def write_session(
         for line in lines:
             fh.write(json.dumps(line, separators=(",", ":")) + "\n")
     return rollout
+
+
+def append_history_records(session_file: Path, *, user_count: int = 2, assistant_count: int = 2, event_count: int = 2) -> None:
+    with session_file.open("a", encoding="utf-8") as fh:
+        for idx in range(user_count):
+            fh.write(json.dumps({
+                "timestamp": f"2026-04-10T10:10:{idx:02d}Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": f"user history {idx}"}],
+                },
+            }, separators=(",", ":")) + "\n")
+        for idx in range(assistant_count):
+            fh.write(json.dumps({
+                "timestamp": f"2026-04-10T10:11:{idx:02d}Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": f"assistant history {idx}"}],
+                },
+            }, separators=(",", ":")) + "\n")
+        for idx in range(event_count):
+            fh.write(json.dumps({
+                "timestamp": f"2026-04-10T10:12:{idx:02d}Z",
+                "type": "event_msg",
+                "payload": {
+                    "type": "user_message" if idx % 2 == 0 else "agent_message",
+                    "message": f"event history {idx}",
+                },
+            }, separators=(",", ":")) + "\n")
 
 
 def write_bundle_manifest(
@@ -1885,6 +1919,149 @@ class CoreWorkflowTests(unittest.TestCase):
             db_provider = conn.execute("select model_provider from threads where id = ?", (session_id,)).fetchone()[0]
             conn.close()
             self.assertEqual(db_provider, "openai")
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def test_repair_session_history_rebuilds_clean_clone_when_history_missing_in_desktop(self) -> None:
+        tmpdir = tempfile.mkdtemp()
+        try:
+            workspace = Path(tmpdir) / "workspace"
+            home = Path(tmpdir) / "home"
+            workspace.mkdir()
+            write_config(home, "openai")
+            write_state_file(home)
+            create_threads_db(home)
+            project_cwd = workspace / "project-history-rebuild"
+            project_cwd.mkdir()
+
+            session_id = "dddddddd-5555-4000-8000-000000000001"
+            session_file = write_session(
+                home,
+                session_id,
+                provider="right_code",
+                source="vscode",
+                originator="Codex Desktop",
+                cwd=project_cwd,
+                user_message="history rebuild",
+            )
+            append_history_records(session_file, user_count=3, assistant_count=2, event_count=4)
+
+            paths = CodexPaths(home=home, cwd=workspace)
+            dry_run = repair_session_history(paths, session_id, target_provider="right_code", dry_run=True, rebuild_clone=True)
+            self.assertTrue(dry_run.needs_rebuild)
+            self.assertEqual(dry_run.line_count, 13)
+
+            result = repair_session_history(paths, session_id, target_provider="right_code", rebuild_clone=True)
+            self.assertTrue(result.rebuilt)
+            self.assertNotEqual(result.target_session_id, session_id)
+            self.assertTrue(result.target_session_file.exists())
+
+            original_records = parse_jsonl_records(session_file)
+            cloned_records = parse_jsonl_records(result.target_session_file)
+            self.assertGreaterEqual(
+                sum(1 for _, obj in cloned_records if isinstance(obj, dict) and obj.get("type") == "response_item"),
+                sum(1 for _, obj in original_records if isinstance(obj, dict) and obj.get("type") == "response_item"),
+            )
+            self.assertGreaterEqual(
+                sum(1 for _, obj in cloned_records if isinstance(obj, dict) and obj.get("type") == "event_msg"),
+                sum(1 for _, obj in original_records if isinstance(obj, dict) and obj.get("type") == "event_msg"),
+            )
+
+            payload = read_session_payload(result.target_session_file)
+            self.assertEqual(payload["model_provider"], "right_code")
+            self.assertEqual(payload["source"], "vscode")
+            self.assertEqual(payload["originator"], "Codex Desktop")
+            self.assertEqual(payload["cloned_from"], session_id)
+
+            conn = sqlite3.connect(home / ".codex" / "state_0001.sqlite")
+            row = conn.execute(
+                "select rollout_path, model_provider from threads where id = ?",
+                (result.target_session_id,),
+            ).fetchone()
+            conn.close()
+            self.assertEqual(row, (str(result.target_session_file), "right_code"))
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def test_repair_session_history_provider_mismatch_keeps_history(self) -> None:
+        tmpdir = tempfile.mkdtemp()
+        try:
+            workspace = Path(tmpdir) / "workspace"
+            home = Path(tmpdir) / "home"
+            workspace.mkdir()
+            write_config(home, "openai")
+            write_state_file(home)
+            create_threads_db(home)
+            project_cwd = workspace / "project-history-provider"
+            project_cwd.mkdir()
+
+            session_id = "eeeeeeee-5555-4000-8000-000000000001"
+            session_file = write_session(
+                home,
+                session_id,
+                provider="right_code",
+                source="vscode",
+                originator="Codex Desktop",
+                cwd=project_cwd,
+                user_message="history provider",
+            )
+            append_history_records(session_file, user_count=1, assistant_count=3, event_count=3)
+
+            paths = CodexPaths(home=home, cwd=workspace)
+            result = repair_session_history(paths, session_id, target_provider="openai", rebuild_clone=True)
+
+            cloned_records = parse_jsonl_records(result.target_session_file)
+            self.assertEqual(
+                sum(1 for _, obj in cloned_records if isinstance(obj, dict) and obj.get("type") == "response_item"),
+                result.response_item_count,
+            )
+            self.assertEqual(
+                sum(1 for _, obj in cloned_records if isinstance(obj, dict) and obj.get("type") == "event_msg"),
+                result.event_msg_count,
+            )
+            payload = read_session_payload(result.target_session_file)
+            self.assertEqual(payload["model_provider"], "openai")
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def test_repair_session_history_strips_long_path_cwd(self) -> None:
+        tmpdir = tempfile.mkdtemp()
+        try:
+            workspace = Path(tmpdir) / "workspace"
+            home = Path(tmpdir) / "home"
+            workspace.mkdir()
+            write_config(home, "right_code")
+            write_state_file(home)
+            create_threads_db(home)
+            project_cwd = workspace / "project-history-cwd"
+            project_cwd.mkdir()
+
+            session_id = "ffffffff-5555-4000-8000-000000000001"
+            session_file = write_session(
+                home,
+                session_id,
+                provider="right_code",
+                source="vscode",
+                originator="Codex Desktop",
+                cwd=project_cwd,
+                user_message="history cwd",
+            )
+            prefixed_cwd = "\\\\?\\" + str(project_cwd)
+            text = session_file.read_text(encoding="utf-8").replace(str(project_cwd), prefixed_cwd)
+            session_file.write_text(text, encoding="utf-8")
+
+            paths = CodexPaths(home=home, cwd=workspace)
+            result = repair_session_history(paths, session_id)
+
+            payload = read_session_payload(result.target_session_file)
+            self.assertEqual(payload["cwd"], str(project_cwd))
+            conn = sqlite3.connect(home / ".codex" / "state_0001.sqlite")
+            db_cwd = conn.execute("select cwd from threads where id = ?", (session_id,)).fetchone()[0]
+            conn.close()
+            self.assertEqual(db_cwd, str(project_cwd))
+            state_data = json.loads((home / ".codex" / ".codex-global-state.json").read_text(encoding="utf-8"))
+            self.assertNotIn(prefixed_cwd, state_data.get("electron-saved-workspace-roots", []))
+            self.assertIn(str(project_cwd), state_data.get("electron-saved-workspace-roots", []))
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
 
