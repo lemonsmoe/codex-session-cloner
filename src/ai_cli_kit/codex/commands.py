@@ -20,6 +20,7 @@ from .presenters.reports import (
     print_dedupe_result,
     print_export_result,
     print_import_result,
+    print_provider_context,
     print_promote_session_result,
     print_repair_result,
     print_restore_backup_result,
@@ -36,6 +37,7 @@ from .services.exporting import export_active_desktop_all, export_cli_all, expor
 from .services.importing import import_desktop_all, import_session
 from .services.history_repair import repair_session_history
 from .services.promote import promote_session
+from .services.provider import detect_provider_context
 from .services.repair import repair_desktop
 from .services.switching import restore_repair_backup, switch_provider
 from .support import build_single_export_root
@@ -77,6 +79,9 @@ def create_parser() -> argparse.ArgumentParser:
         help="Optional limit for validation count (0 means no limit)",
     )
     validate_bundles_parser.add_argument("--verbose", action="store_true", help="Print successful bundle validations too")
+
+    debug_provider_parser = subparsers.add_parser("debug-provider", help="Print current provider detection context")
+    debug_provider_parser.add_argument("target_provider", nargs="?", default="", help="Optional provider override")
 
     clone_parser = subparsers.add_parser("clone-provider", help="Clone active sessions to the target provider")
     clone_parser.add_argument("target_provider", nargs="?", default="", help="Optional provider override")
@@ -196,6 +201,8 @@ def run_cli(argv: Sequence[str], *, paths: Optional[CodexPaths] = None) -> int:
             ),
             verbose=args.verbose,
         )
+    if args.command == "debug-provider":
+        return print_provider_context(detect_provider_context(paths, explicit=args.target_provider))
     if args.command == "clone-provider":
         return print_clone_run_result(clone_to_provider(paths, target_provider=args.target_provider, dry_run=args.dry_run))
     if args.command == "clean-clones":

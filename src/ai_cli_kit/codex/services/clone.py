@@ -12,7 +12,7 @@ from ..errors import ToolkitError
 from ..models import CleanupResult, CloneFileResult, CloneRunResult
 from ..paths import CodexPaths
 from ..services.dedupe import _representative_key, _root_of, _session_catalog
-from ..services.provider import detect_provider
+from ..services.provider import detect_provider, detect_provider_context, session_matches_provider, session_provider_fingerprint
 from ..stores.index import load_existing_index, upsert_session_index
 from ..support import atomic_write, backup_file, backup_operation_slug, normalize_iso, prune_old_backups
 from ..stores.session_files import (
@@ -35,6 +35,7 @@ def build_clone_index(
     repair_index: bool = False,
 ) -> set[str]:
     provider = detect_provider(paths, explicit=target_provider)
+    context = detect_provider_context(paths, explicit=target_provider)
     cloned_from_ids: set[str] = set()
     total_files = 0
     existing_index = load_existing_index(paths.index_file) if repair_index else {}
@@ -49,7 +50,7 @@ def build_clone_index(
         except ToolkitError:
             continue
 
-        if payload.get("model_provider") != provider:
+        if not session_matches_provider(payload, provider, context.fingerprint):
             continue
 
         origin_id = payload.get("cloned_from")
@@ -84,6 +85,7 @@ def clone_session_file(
 ) -> CloneFileResult:
     session_file = Path(session_file).expanduser()
     provider = detect_provider(paths, explicit=target_provider)
+    context = detect_provider_context(paths, explicit=target_provider)
     if already_cloned_ids is None:
         already_cloned_ids = build_clone_index(paths, target_provider=provider, quiet=True)
 
@@ -113,7 +115,7 @@ def clone_session_file(
     if not isinstance(current_id, str) or not current_id:
         return CloneFileResult("error", "Session id missing from session_meta")
 
-    if current_provider == provider:
+    if session_matches_provider(payload, provider, context.fingerprint):
         return CloneFileResult("skipped_target", "Already on target provider")
 
     if current_id in already_cloned_ids:
@@ -125,6 +127,16 @@ def clone_session_file(
     new_payload["model_provider"] = provider
     new_payload["cloned_from"] = current_id
     new_payload["original_provider"] = current_provider
+    new_payload["original_provider_fingerprint"] = session_provider_fingerprint(payload)
+    new_payload["target_provider_fingerprint"] = context.fingerprint
+    new_payload["provider_context_label"] = context.label
+    new_payload["provider_base_url_host"] = context.base_url_host
+    if context.wire_api:
+        new_payload["provider_wire_api"] = context.wire_api
+    if context.ccswitch_provider_id:
+        new_payload["ccswitch_provider_id"] = context.ccswitch_provider_id
+    if context.ccswitch_api_format:
+        new_payload["ccswitch_api_format"] = context.ccswitch_api_format
     new_payload["clone_timestamp"] = datetime.now(timezone.utc).isoformat()
     session_meta["payload"] = new_payload
 
@@ -166,6 +178,7 @@ def clone_to_provider(
     active_only: bool = True,
 ) -> CloneRunResult:
     provider = detect_provider(paths, explicit=target_provider)
+    context = detect_provider_context(paths, explicit=target_provider)
     already_cloned = build_clone_index(
         paths,
         target_provider=provider,
@@ -198,7 +211,11 @@ def clone_to_provider(
     errors = []
 
     for representative in representatives:
-        if representative.model_provider == provider:
+        try:
+            representative_payload = read_session_payload(representative.path)
+        except ToolkitError:
+            representative_payload = {}
+        if session_matches_provider(representative_payload, provider, context.fingerprint):
             stats["skipped_target"] += 1
             continue
         stats["candidates"] += 1

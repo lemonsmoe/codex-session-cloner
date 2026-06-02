@@ -1,4 +1,4 @@
-"""CLI presentation helpers for structured service results."""
+﻿"""CLI presentation helpers for structured service results."""
 
 from __future__ import annotations
 
@@ -45,11 +45,32 @@ def print_bundle_rows(rows: list[BundleSummary]) -> int:
 
     for bundle in rows:
         updated = bundle.updated_at or bundle.exported_at or "-"
-        title = bundle.thread_name or "（无标题）"
+        title = bundle.thread_name or "(untitled)"
         print(
             f"{bundle.session_id} | {bundle.export_group_label or bundle.export_group or '-'} | {bundle.source_machine or '-'} | {bundle.session_kind or '-'} | "
             f"{updated} | {bundle.bundle_dir} | {title[:80]}"
         )
+    return 0
+
+
+def print_provider_context(context) -> int:
+    print(f"Model provider: {context.model_provider}")
+    print(f"Model: {context.model or '-'}")
+    print(f"Fingerprint: {context.fingerprint}")
+    print(f"Label: {context.label or '-'}")
+    print(f"Base URL host: {context.base_url_host or '-'}")
+    print(f"Wire API: {context.wire_api or '-'}")
+    print(f"Requires OpenAI auth: {'yes' if context.requires_openai_auth else 'no'}")
+    print(f"OpenAI official: {'yes' if context.is_openai_official else 'no'}")
+    print(f"CcSwitch: {'yes' if context.is_ccswitch else 'no'}")
+    if context.ccswitch_provider_id:
+        print(f"CcSwitch provider id: {context.ccswitch_provider_id}")
+    if context.ccswitch_api_format:
+        print(f"CcSwitch API format: {context.ccswitch_api_format}")
+    print(f"Local route: {'yes' if context.is_local_route else 'no'}")
+    print(f"Legacy profile detected: {'yes' if context.legacy_profile_detected else 'no'}")
+    for warning in context.warnings:
+        print(warning, file=sys.stderr)
     return 0
 
 
@@ -296,9 +317,9 @@ def print_import_result(result: ImportResult) -> int:
 def print_batch_import_result(result: BatchImportResult) -> int:
     print(f"Bundle root: {result.bundle_root}")
     print(f"Desktop visible: {'yes' if result.desktop_visible else 'no'}")
-    print(f"Machine filter: {result.machine_label or result.machine_filter or '全部机器'}")
-    print(f"Export group filter: {result.export_group_label or result.export_group_filter or '全部导出方式'}")
-    print(f"History view: {'仅最新' if result.latest_only else '全部历史'}")
+    print(f"Machine filter: {result.machine_label or result.machine_filter or 'all machines'}")
+    print(f"Export group filter: {result.export_group_label or result.export_group_filter or 'all export groups'}")
+    print(f"History view: {'latest only' if result.latest_only else 'all history'}")
     print(f"Bundle directories found: {len(result.bundle_dirs)}")
     print(f"Imported bundle directories: {len(result.success_dirs)}")
     if result.failed_imports:

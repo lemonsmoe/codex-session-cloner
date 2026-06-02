@@ -22,6 +22,7 @@ from ..stores.session_files import (
     extract_last_timestamp,
     extract_session_meta_fields,
     find_session_file,
+    read_session_payload,
 )
 from ..support import (
     atomic_write,
@@ -96,6 +97,7 @@ def export_session(
         session_originator = meta_fields["originator"]
         session_kind = classify_session_kind(session_source, session_originator)
         last_updated = extract_last_timestamp(session_file) or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        payload = read_session_payload(session_file)
 
         manifest_data = OrderedDict(
             SESSION_ID=session_id,
@@ -107,6 +109,19 @@ def export_session(
             SESSION_SOURCE=session_source,
             SESSION_ORIGINATOR=session_originator,
             SESSION_KIND=session_kind,
+            SESSION_MODEL_PROVIDER=str(payload.get("model_provider", "") or ""),
+            SESSION_MODEL=str(payload.get("model", "") or ""),
+            SESSION_PROVIDER_FINGERPRINT=str(
+                payload.get("target_provider_fingerprint")
+                or payload.get("provider_fingerprint")
+                or payload.get("original_provider_fingerprint")
+                or ""
+            ),
+            SESSION_PROVIDER_LABEL=str(payload.get("provider_context_label", "") or ""),
+            SESSION_PROVIDER_BASE_URL_HOST=str(payload.get("provider_base_url_host", "") or ""),
+            SESSION_WIRE_API=str(payload.get("provider_wire_api", "") or ""),
+            SESSION_CC_SWITCH_PROVIDER_ID=str(payload.get("ccswitch_provider_id", "") or ""),
+            SESSION_CC_SWITCH_API_FORMAT=str(payload.get("ccswitch_api_format", "") or ""),
             EXPORT_MACHINE=machine_label,
             EXPORT_MACHINE_KEY=machine_key,
         )

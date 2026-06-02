@@ -46,6 +46,7 @@ CLI_SUBCOMMANDS = {
     "clean-archived",
     "clean-clones",
     "dedupe-clones",
+    "debug-provider",
     "list",
     "list-bundles",
     "validate-bundles",
@@ -74,6 +75,7 @@ def create_arg_parser() -> argparse.ArgumentParser:
             "  clean-archived        Delete archived Codex threads and metadata\n"
             "  clean-clones          Remove legacy unmarked clone files\n"
             "  dedupe-clones         Remove duplicate lineage sessions, keeping the latest representative\n"
+            "  debug-provider        Print provider detection context and fingerprint\n"
             "  list                  Browse local sessions\n"
             "  list-bundles          Browse exported bundle folders\n"
             "  validate-bundles      Validate bundle folder health\n"

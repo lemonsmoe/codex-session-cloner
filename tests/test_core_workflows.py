@@ -27,7 +27,7 @@ from ai_cli_kit.codex.services.exporting import export_active_desktop_all, expor
 from ai_cli_kit.codex.services.history_repair import repair_session_history  # noqa: E402
 from ai_cli_kit.codex.services.importing import import_desktop_all, import_session  # noqa: E402
 from ai_cli_kit.codex.services.promote import promote_session  # noqa: E402
-from ai_cli_kit.codex.services.provider import detect_provider  # noqa: E402
+from ai_cli_kit.codex.services.provider import detect_provider, detect_provider_context  # noqa: E402
 from ai_cli_kit.codex.services.repair import repair_desktop  # noqa: E402
 from ai_cli_kit.codex.services.switching import restore_repair_backup, switch_provider  # noqa: E402
 from ai_cli_kit.codex.support import backup_operation_slug, machine_label_to_key  # noqa: E402
@@ -578,7 +578,7 @@ class ProviderDetectionTests(unittest.TestCase):
             )
             self.assertEqual(detect_provider(CodexPaths(home=home)), "only_one")
 
-    def test_detect_provider_infers_openai_from_official_bundled_marketplace(self) -> None:
+    def test_detect_provider_does_not_infer_openai_from_bundled_marketplace_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             home = Path(tmpdir) / "home"
             code_dir = home / ".codex"
@@ -599,9 +599,9 @@ class ProviderDetectionTests(unittest.TestCase):
                 originator="Codex Desktop",
                 cwd=Path("/tmp/project-a"),
             )
-            self.assertEqual(detect_provider(CodexPaths(home=home)), "openai")
+            self.assertEqual(detect_provider(CodexPaths(home=home)), "linkapi")
 
-    def test_detect_provider_infers_openai_from_primary_runtime_marketplace(self) -> None:
+    def test_detect_provider_does_not_infer_openai_from_primary_runtime_marketplace_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             home = Path(tmpdir) / "home"
             code_dir = home / ".codex"
@@ -620,7 +620,7 @@ class ProviderDetectionTests(unittest.TestCase):
                 originator="Codex Desktop",
                 cwd=Path("/tmp/project-a"),
             )
-            self.assertEqual(detect_provider(CodexPaths(home=home)), "openai")
+            self.assertEqual(detect_provider(CodexPaths(home=home)), "linkapi")
 
     def test_detect_provider_falls_back_to_recent_session_provider(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -728,6 +728,104 @@ class ProviderDetectionTests(unittest.TestCase):
             )
 
             self.assertEqual(detect_provider(CodexPaths(home=home)), "right_code")
+
+    def test_detect_provider_context_identifies_custom_deepseek(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            home = Path(tmpdir) / "home"
+            code_dir = home / ".codex"
+            code_dir.mkdir(parents=True, exist_ok=True)
+            (code_dir / "config.toml").write_text(
+                'model_provider = "custom"\n'
+                'model = "deepseek-v4-flash"\n'
+                '[model_providers.custom]\n'
+                'name = "deepseek"\n'
+                'base_url = "https://api.deepseek.com"\n'
+                'wire_api = "responses"\n'
+                'requires_openai_auth = true\n',
+                encoding="utf-8",
+            )
+
+            context = detect_provider_context(CodexPaths(home=home))
+
+            self.assertEqual(context.model_provider, "custom")
+            self.assertEqual(context.provider_name, "deepseek")
+            self.assertEqual(context.base_url_host, "api.deepseek.com")
+            self.assertEqual(context.fingerprint, "custom:deepseek:api.deepseek.com")
+            self.assertFalse(context.is_openai_official)
+
+    def test_detect_provider_context_reports_legacy_profile_and_local_route(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            home = Path(tmpdir) / "home"
+            code_dir = home / ".codex"
+            code_dir.mkdir(parents=True, exist_ok=True)
+            (code_dir / "config.toml").write_text(
+                'profile = "old"\n'
+                'model_provider = "custom"\n'
+                '[profiles.old]\n'
+                'model = "legacy"\n'
+                '[model_providers.custom]\n'
+                'name = "local-router"\n'
+                'base_url = "http://127.0.0.1:4141"\n',
+                encoding="utf-8",
+            )
+
+            context = detect_provider_context(CodexPaths(home=home))
+
+            self.assertTrue(context.legacy_profile_detected)
+            self.assertTrue(context.is_local_route)
+            self.assertTrue(context.warnings)
+
+    def test_detect_provider_context_reads_ccswitch_codex_provider_read_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            home = Path(tmpdir) / "home"
+            code_dir = home / ".codex"
+            switch_dir = home / ".cc-switch"
+            code_dir.mkdir(parents=True, exist_ok=True)
+            switch_dir.mkdir(parents=True, exist_ok=True)
+            (code_dir / "config.toml").write_text(
+                'model_provider = "custom"\n'
+                '[model_providers.custom]\n'
+                'name = "placeholder"\n'
+                'base_url = "https://placeholder.invalid"\n',
+                encoding="utf-8",
+            )
+            (switch_dir / "settings.json").write_text(
+                json.dumps({"currentProviderCodex": "deepseek-codex"}, separators=(",", ":")),
+                encoding="utf-8",
+            )
+            db_path = switch_dir / "cc-switch.db"
+            conn = sqlite3.connect(db_path)
+            try:
+                conn.execute("create table providers (id text, name text, app_type text, settings_config text)")
+                settings_config = {
+                    "config": (
+                        'model_provider = "custom"\n'
+                        'model = "deepseek-v4-flash"\n'
+                        '[model_providers.custom]\n'
+                        'name = "deepseek"\n'
+                        'base_url = "https://api.deepseek.com"\n'
+                        'wire_api = "responses"\n'
+                    ),
+                    "meta": {"apiFormat": "responses"},
+                }
+                conn.execute(
+                    "insert into providers values (?, ?, ?, ?)",
+                    ("deepseek-codex", "DeepSeek", "codex", json.dumps(settings_config, separators=(",", ":"))),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            before_config = (code_dir / "config.toml").read_text(encoding="utf-8")
+            before_db = db_path.read_bytes()
+            context = detect_provider_context(CodexPaths(home=home))
+
+            self.assertTrue(context.is_ccswitch)
+            self.assertEqual(context.ccswitch_provider_id, "deepseek-codex")
+            self.assertEqual(context.ccswitch_api_format, "responses")
+            self.assertEqual(context.fingerprint, "ccswitch:deepseek-codex")
+            self.assertEqual((code_dir / "config.toml").read_text(encoding="utf-8"), before_config)
+            self.assertEqual(db_path.read_bytes(), before_db)
 
     def test_detect_provider_keeps_explicit_config_over_recent_openai_session(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1500,6 +1598,8 @@ class CoreWorkflowTests(unittest.TestCase):
             self.assertEqual(cloned_payload["model_provider"], "target-provider")
             self.assertEqual(cloned_payload["cloned_from"], original_id)
             self.assertEqual(cloned_payload["original_provider"], "old-provider")
+            self.assertEqual(cloned_payload["original_provider_fingerprint"], "old-provider")
+            self.assertEqual(cloned_payload["target_provider_fingerprint"], "target-provider")
             cloned_records = [obj for _, obj in parse_jsonl_records(cloned_file) if obj]
             self.assertEqual(sum(1 for obj in cloned_records if obj.get("type") == "session_meta"), 1)
             self.assertEqual(sum(1 for obj in cloned_records if obj.get("type") == "session_meta_embedded"), 1)
@@ -2982,6 +3082,8 @@ class CoreWorkflowTests(unittest.TestCase):
                 manifest["RELATIVE_PATH"],
                 f"sessions/2026/04/10/rollout-2026-04-10T10-00-00-{session_id}.jsonl",
             )
+            self.assertEqual(manifest["SESSION_MODEL_PROVIDER"], "source-provider")
+            self.assertIn("SESSION_PROVIDER_FINGERPRINT", manifest)
 
     def test_resolve_bundle_by_session_id_is_case_insensitive(self) -> None:
         # Bundle exported with mixed-case id 'ABc...' should resolve when looked
