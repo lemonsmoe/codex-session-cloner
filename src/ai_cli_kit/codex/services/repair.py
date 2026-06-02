@@ -7,6 +7,7 @@ import sqlite3
 from collections import OrderedDict
 from contextlib import nullcontext
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from ..errors import ToolkitError
@@ -30,6 +31,7 @@ from ..stores.session_files import (
 from ..support import (
     atomic_write,
     backup_file,
+    backup_operation_slug,
     classify_session_kind,
     file_lock,
     iso_to_epoch,
@@ -63,7 +65,7 @@ def repair_desktop(
     backup_parent = paths.code_dir / "repair_backups"
     if not dry_run:
         prune_old_backups(backup_parent, keep_last=20)
-    backup_root = backup_parent / f"visibility-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
+    backup_root = backup_parent / backup_operation_slug("visibility")
     backed_up: set[str] = set()
     warnings: list[str] = []
 
@@ -78,6 +80,7 @@ def repair_desktop(
     visible_thread_ids: list[str] = []
     thread_workspace_hints: dict[str, str] = {}
     thread_permissions: dict[str, dict] = {}
+    created_workspace_dirs: list[str] = []
     desktop_retagged = 0
     cli_converted = 0
 
@@ -187,7 +190,7 @@ def repair_desktop(
             or existing_index.get(session_id, {}).get("updated_at")
             or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         )
-        cwd = session_meta.get("cwd", "") if isinstance(session_meta.get("cwd", ""), str) else ""
+        cwd = desktop_visible_path(session_meta.get("cwd", "") if isinstance(session_meta.get("cwd", ""), str) else "")
         preview_title = build_session_preview(history_first_messages.get(session_id, ""), session_file, cwd)
         existing_thread_name = existing_index.get(session_id, {}).get("thread_name", "")
         cloned_from = session_meta.get("cloned_from")
@@ -206,6 +209,8 @@ def repair_desktop(
             candidate = nearest_existing_parent(desktop_cwd) or desktop_cwd
             if candidate and candidate not in workspace_candidates:
                 workspace_candidates[candidate] = True
+            if desktop_cwd and desktop_cwd not in workspace_candidates:
+                workspace_candidates[desktop_cwd] = True
 
         archived = 1 if "archived_sessions" in session_file.parts else 0
         if desktop_like and provider and session_meta.get("model_provider") == provider and not archived:
@@ -251,6 +256,22 @@ def repair_desktop(
         unique_entries.append(entry)
         seen_entry_ids.add(entry["id"])
     entries = unique_entries
+
+    if not dry_run:
+        for entry in entries:
+            if entry["kind"] != "desktop" or entry["archived"]:
+                continue
+            cwd = entry["cwd"]
+            if not cwd:
+                continue
+            workspace_dir = Path(cwd)
+            if workspace_dir.exists():
+                continue
+            try:
+                workspace_dir.mkdir(parents=True, exist_ok=True)
+                created_workspace_dirs.append(cwd)
+            except OSError as exc:
+                warnings.append(f"Warning: failed to create missing workspace directory {cwd}: {exc}")
 
     if not dry_run:
         try:
@@ -327,4 +348,5 @@ def repair_desktop(
         backup_root=(None if dry_run else backup_root),
         changed_sessions=changed_sessions,
         warnings=warnings,
+        created_workspace_dirs=created_workspace_dirs,
     )

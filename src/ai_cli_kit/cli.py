@@ -39,6 +39,7 @@ from .core.tui.terminal import (
     style_text,
     term_width,
 )
+from .core.tui.screen_mode import resolve_screen_mode
 from .core.tui.wordmark import LOGO_FONT_BANNER, render_wordmark
 
 
@@ -69,6 +70,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         tool_token = argv[0]
         passthrough = argv[1:]
         return _dispatch_to_tool(tool_token, passthrough)
+
+    if argv and argv[0].startswith("-"):
+        sys.stderr.write(f"{APP_COMMAND}: unknown option '{argv[0]}'\n")
+        _print_top_help(stream=sys.stderr)
+        return 2
 
     # Unknown subcommand → show help with a hint.
     if argv and not argv[0].startswith("-"):
@@ -145,6 +151,7 @@ def _run_hub() -> int:
     Esc / q at the hub terminates the whole process.
     """
     selected = 0
+    screen_mode = resolve_screen_mode() if _WINDOWS_VT_OK else None
     # Only emit VT control sequences (alt screen + cursor toggle) when the
     # terminal can actually interpret them. On legacy Windows cmd.exe with
     # ``_WINDOWS_VT_OK=False`` they would print as literal ``\033[?1049h``
@@ -152,8 +159,8 @@ def _run_hub() -> int:
     # (which itself uses ``os.system("cls")`` on legacy consoles) and skip
     # cursor hiding — the experience is uglier (no alt-screen, no cursor
     # hide) but at least readable.
-    if _WINDOWS_VT_OK:
-        sys.stdout.write("\033[?1049h\033[?25l")
+    if _WINDOWS_VT_OK and screen_mode is not None:
+        sys.stdout.write(screen_mode.enter_sequence)
         sys.stdout.flush()
     else:
         clear_screen()
@@ -190,8 +197,8 @@ def _run_hub() -> int:
                 return 0
     finally:
         # Symmetric with the entry guard: only undo what we actually emitted.
-        if _WINDOWS_VT_OK:
-            sys.stdout.write("\033[?25h\033[?1049l")
+        if _WINDOWS_VT_OK and screen_mode is not None:
+            sys.stdout.write(screen_mode.exit_sequence)
         else:
             clear_screen()
         sys.stdout.flush()

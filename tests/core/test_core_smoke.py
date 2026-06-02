@@ -170,6 +170,11 @@ class CoreScreenModeTests(unittest.TestCase):
         self.assertEqual(normalize_screen_mode("garbage"), "auto")
         self.assertEqual(normalize_screen_mode(None), "auto")
 
+    def test_screen_mode_env_names_include_aik_override(self) -> None:
+        from ai_cli_kit.core.tui.screen_mode import SCREEN_MODE_ENV_NAMES
+
+        self.assertIn("AIK_TUI_SCREEN", SCREEN_MODE_ENV_NAMES)
+
 
 class CoreLauncherEnvTests(unittest.TestCase):
     def test_launcher_env_defaults_cover_utf8_keys(self) -> None:

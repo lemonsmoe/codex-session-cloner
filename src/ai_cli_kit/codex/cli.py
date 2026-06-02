@@ -13,7 +13,7 @@ from . import APP_COMMAND, APP_DISPLAY_NAME, __version__
 from .commands import run_cli as run_toolkit_cli
 from .errors import ToolkitError
 from .paths import CodexPaths
-from .services.provider import detect_provider
+from .services.provider import DEFAULT_MODEL_PROVIDER, detect_provider
 from .tui.app import (
     ToolkitAppContext,
     run_cleanup_mode,
@@ -31,7 +31,6 @@ from .tui.terminal import (
 # Configuration
 CODEX_ACTIVE_SESSIONS_DIR = os.path.expanduser("~/.codex/sessions")
 CODEX_CONFIG_PATH = os.path.expanduser("~/.codex/config.toml")
-DEFAULT_MODEL_PROVIDER = "cliproxyapi"
 
 
 def _detect_target_model_provider() -> str:
@@ -44,6 +43,7 @@ def _detect_target_model_provider() -> str:
 TARGET_MODEL_PROVIDER = _detect_target_model_provider()
 CLI_SUBCOMMANDS = {
     "clone-provider",
+    "clean-archived",
     "clean-clones",
     "dedupe-clones",
     "list",
@@ -71,6 +71,7 @@ def create_arg_parser() -> argparse.ArgumentParser:
         epilog=(
             "Canonical toolkit commands:\n"
             "  clone-provider        Clone active sessions to the current provider\n"
+            "  clean-archived        Delete archived Codex threads and metadata\n"
             "  clean-clones          Remove legacy unmarked clone files\n"
             "  dedupe-clones         Remove duplicate lineage sessions, keeping the latest representative\n"
             "  list                  Browse local sessions\n"

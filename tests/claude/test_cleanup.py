@@ -24,6 +24,11 @@ from ai_cli_kit.core.tui.screen_mode import (
 from ai_cli_kit.claude.tui.terminal import app_logo_lines, display_width, render_box
 
 
+def _path_text(value: object) -> str:
+    """Return path text with stable separators for cross-platform assertions."""
+    return str(value).replace("\\", "/")
+
+
 class CleanupWorkflowTests(unittest.TestCase):
     def test_safe_plan_marks_session_targets_unselected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -420,6 +425,40 @@ class CleanupWorkflowTests(unittest.TestCase):
             self.assertEqual(mocked_run.call_args.kwargs["timeout"], 12)
             self.assertTrue(any(record.key == "refresh_claude" for record in summary.records))
 
+    def test_remap_history_prefers_newest_backup_root_by_creation_identity_not_touched_mtime(self) -> None:
+        import os as _os
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            home = Path(tmp_dir)
+            paths = default_paths(home)
+            paths.claude_dir.mkdir(parents=True)
+            paths.statsig_dir.mkdir(parents=True)
+            paths.projects_dir.mkdir(parents=True)
+            paths.backup_root_base.mkdir(parents=True)
+
+            paths.state_file.write_text(json.dumps({"userID": "current-user"}), encoding="utf-8")
+            project_file = paths.projects_dir / "session.json"
+            project_file.write_text(json.dumps({"userID": "newer-old-user"}), encoding="utf-8")
+
+            newer_backup_root = paths.backup_root_base / "20250101-000000-000002-bbbb"
+            older_backup_root = paths.backup_root_base / "20250101-000000-000001-aaaa"
+            for root, user_id, ts in (
+                (newer_backup_root, "newer-old-user", 1_000),
+                (older_backup_root, "older-old-user", 2_000),
+            ):
+                root.mkdir()
+                (root / ".claude.json").write_text(json.dumps({"userID": user_id}), encoding="utf-8")
+                _os.utime(root, (ts, ts))
+
+            summary = remap_history_identifiers(
+                paths,
+                options=RunOptions(backup_enabled=False, dry_run=False),
+            )
+
+            payload = json.loads(project_file.read_text(encoding="utf-8"))
+            self.assertEqual(payload["userID"], "current-user")
+            self.assertTrue(any(record.status == "updated" for record in summary.records))
+
 
 class StateFullIdentityScrubTests(unittest.TestCase):
     """Deep PII scrub of ~/.claude.json — covers oauthAccount + nested keys."""
@@ -586,6 +625,45 @@ class BackupRestoreTests(unittest.TestCase):
 
 
 class PruneBackupsTests(unittest.TestCase):
+    def test_list_backup_roots_ignores_later_mtime_touch_on_older_named_root(self) -> None:
+        from ai_cli_kit.claude.services import list_backup_roots
+        import os as _os
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            home = Path(tmp_dir)
+            paths = default_paths(home)
+            paths.backup_root_base.mkdir(parents=True)
+
+            newer = paths.backup_root_base / "20250101-000000-000002-bbbb"
+            older = paths.backup_root_base / "20250101-000000-000001-aaaa"
+            newer.mkdir()
+            older.mkdir()
+            _os.utime(newer, (1_000, 1_000))
+            _os.utime(older, (2_000, 2_000))
+
+            roots = list_backup_roots(paths)
+            self.assertEqual(roots[:2], (newer, older))
+
+    def test_list_backup_roots_uses_name_as_stable_tiebreaker_when_mtime_matches(self) -> None:
+        from ai_cli_kit.claude.services import list_backup_roots
+        import os as _os
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            home = Path(tmp_dir)
+            paths = default_paths(home)
+            paths.backup_root_base.mkdir(parents=True)
+
+            older = paths.backup_root_base / "20250101-000000-000001-aaaa"
+            newer = paths.backup_root_base / "20250101-000000-000002-bbbb"
+            older.mkdir()
+            newer.mkdir()
+            shared_ts = 1_700_000_000
+            _os.utime(older, (shared_ts, shared_ts))
+            _os.utime(newer, (shared_ts, shared_ts))
+
+            roots = list_backup_roots(paths)
+            self.assertEqual(roots[:2], (newer, older))
+
     def test_prune_keeps_only_newest_n_roots(self) -> None:
         from ai_cli_kit.claude.services import prune_backup_roots, list_backup_roots
         import os as _os
@@ -1069,7 +1147,7 @@ class NfcNormalizeTests(unittest.TestCase):
         nfd_dir = unicodedata.normalize("NFD", "/srv/é-data")
         paths = resolve_default_paths(Path("/tmp/home"), env={"CLAUDE_CONFIG_DIR": nfd_dir})
         self.assertEqual(
-            str(paths.claude_dir),
+            _path_text(paths.claude_dir),
             unicodedata.normalize("NFC", nfd_dir),
         )
 
@@ -1082,10 +1160,9 @@ class NfcNormalizeTests(unittest.TestCase):
         nfd_dir = unicodedata.normalize("NFD", "/srv/中文-data")
         paths = resolve_default_paths(Path("/tmp/home"), env={"CLAUDE_CONFIG_DIR": nfd_dir})
         names = _enumerate_keychain_service_names(paths)
-        # Hash MUST match cc's: sha256(NFC(claude_dir))[:8]
-        expected_dirhash = sha256(
-            unicodedata.normalize("NFC", nfd_dir).encode("utf-8")
-        ).hexdigest()[:8]
+        # Hash MUST match cc's: sha256(NFC(claude_dir))[:8]. Use the
+        # resolved path string so separators stay platform-native.
+        expected_dirhash = sha256(str(paths.claude_dir).encode("utf-8")).hexdigest()[:8]
         # At least one service name should embed the dirHash suffix.
         self.assertTrue(
             any(expected_dirhash in name for name in names),
@@ -1146,7 +1223,7 @@ class AutoMemoryOverrideTests(unittest.TestCase):
                 encoding="utf-8",
             )
             resolved = resolve_auto_memory_override(paths, env={"CLAUDE_COWORK_MEMORY_PATH_OVERRIDE": "/from/env"})
-            self.assertEqual(str(resolved), "/from/env")
+            self.assertEqual(_path_text(resolved), "/from/env")
 
     def test_settings_used_when_env_unset(self) -> None:
         from ai_cli_kit.claude.services import resolve_auto_memory_override
@@ -1160,7 +1237,7 @@ class AutoMemoryOverrideTests(unittest.TestCase):
                 encoding="utf-8",
             )
             resolved = resolve_auto_memory_override(paths, env={})
-            self.assertEqual(str(resolved), "/from/settings")
+            self.assertEqual(_path_text(resolved), "/from/settings")
 
     def test_invalid_paths_rejected(self) -> None:
         from ai_cli_kit.claude.services import _validate_memory_path
@@ -1179,7 +1256,7 @@ class AutoMemoryOverrideTests(unittest.TestCase):
         # Valid absolute path accepted.
         result = _validate_memory_path("/some/where", expand_tilde=False)
         self.assertIsNotNone(result)
-        self.assertTrue(str(result).startswith("/some/where"))
+        self.assertTrue(_path_text(result).startswith("/some/where"))
 
     def test_dynamic_target_always_present_inapplicable_without_override(self) -> None:
         from unittest.mock import patch
@@ -1211,7 +1288,7 @@ class AutoMemoryOverrideTests(unittest.TestCase):
             ):
                 plan = build_plan(paths, {"auto_memory_override"})
                 item = next(p for p in plan if p.target.key == "auto_memory_override")
-                self.assertEqual(item.target.target_path, "/elsewhere/memory")
+                self.assertEqual(_path_text(item.target.target_path), "/elsewhere/memory")
 
             # With REJECTED override: target shows distinct warning.
             with patch(
@@ -1336,6 +1413,18 @@ class CliEndToEndTests(unittest.TestCase):
             self.assertEqual(payload["keep"], 2)
             self.assertEqual(len(payload["removed"]), 2)
             self.assertEqual(payload["failed"], [])
+
+    def test_prune_backups_rejects_non_positive_keep_in_json_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            home = Path(tmp_dir)
+            rc, output = self._capture_main(
+                ["--home", str(home), "prune-backups", "--keep", "0", "--yes", "--format", "json"]
+            )
+            self.assertEqual(rc, 2)
+            payload = json.loads(output)
+            self.assertEqual(payload["command"], "prune-backups")
+            self.assertEqual(payload["status"], "error")
+            self.assertIn("--keep", payload["error"])
 
     def test_debug_paths_json_dumps_full_layout(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -2198,9 +2287,9 @@ class R8Pass1RegressionTests(unittest.TestCase):
                     "XDG_STATE_HOME": "/srv/state",
                 },
             )
-            self.assertEqual(str(paths.xdg_data_claude), "/srv/share/claude")
-            self.assertEqual(str(paths.xdg_cache_claude), "/srv/cache/claude")
-            self.assertEqual(str(paths.xdg_state_claude), "/srv/state/claude")
+            self.assertEqual(_path_text(paths.xdg_data_claude), "/srv/share/claude")
+            self.assertEqual(_path_text(paths.xdg_cache_claude), "/srv/cache/claude")
+            self.assertEqual(_path_text(paths.xdg_state_claude), "/srv/state/claude")
 
     def test_xdg_paths_default_to_home_subdirs(self) -> None:
         from ai_cli_kit.claude.paths import resolve_default_paths
@@ -2212,9 +2301,20 @@ class R8Pass1RegressionTests(unittest.TestCase):
             self.assertEqual(paths.xdg_cache_claude, home / ".cache" / "claude")
             self.assertEqual(paths.xdg_state_claude, home / ".local" / "state" / "claude")
 
-    def test_path_size_cache_skips_child_sig_on_top_mtime_hit(self) -> None:
-        """R8 M4 perf: when top mtime matches a cached entry, the
-        expensive child_mtime_signature scandir walk is skipped."""
+    def test_path_size_cache_hits_on_unchanged_content(self) -> None:
+        """When content (and hence child_sig) is unchanged between
+        calls, the second call must hit cache without doing the
+        expensive recursive ``_scandir_size`` walk.
+
+        The original R8 M4 fast path tried to also skip
+        ``_child_mtime_signature``, but that was unsound: a subdir-only
+        write (e.g. cc rolling out ``projects/<cwd>/<file>``) does not
+        bubble mtime up to the cached path, so the fast path returned
+        stale sizes (see ``PathSizeChildMtimeTests`` in
+        ``test_claude_hardening.py``). ``_child_mtime_signature`` is
+        shallow (immediate children only), so always computing it on
+        the slow path is cheap; only ``_scandir_size`` is worth
+        guarding behind the cache."""
         from unittest.mock import patch
         from ai_cli_kit.claude.services import _PATH_SIZE_CACHE, _path_size
 
@@ -2226,10 +2326,10 @@ class R8Pass1RegressionTests(unittest.TestCase):
             # Prime cache.
             first = _path_size(d)
             self.assertEqual(first, 1)
-            # Second call must NOT call _child_mtime_signature.
+            # Second call must NOT call _scandir_size.
             with patch(
-                "ai_cli_kit.claude.services._child_mtime_signature",
-                side_effect=AssertionError("child_sig should be skipped on top-mtime hit"),
+                "ai_cli_kit.claude.services._scandir_size",
+                side_effect=AssertionError("cache should hit on unchanged content"),
             ):
                 second = _path_size(d)
             self.assertEqual(second, 1)
@@ -2352,7 +2452,7 @@ class R10AutoMemoryFallthroughTests(unittest.TestCase):
             )
             # Must NOT report rejected — settings provides a valid override.
             self.assertIsNotNone(state.valid_path)
-            self.assertIn("/srv/memories", str(state.valid_path))
+            self.assertIn("/srv/memories", _path_text(state.valid_path))
 
     def test_invalid_env_invalid_settings_reports_env_rejection(self) -> None:
         from ai_cli_kit.claude.services import resolve_auto_memory_override_state
@@ -2400,7 +2500,7 @@ class R10OverlappingXdgAnchorsTests(unittest.TestCase):
             # ``cache/claude/x.txt`` (anchored at /srv).
             cache_file = paths.xdg_cache_claude / "x.txt"  # /srv/cache/claude/x.txt
             relative = _relative_under_anchors(paths, cache_file)
-            self.assertEqual(str(relative), "claude/x.txt")
+            self.assertEqual(_path_text(relative), "claude/x.txt")
 
 
 class R9DebugPathsTriStateTests(unittest.TestCase):

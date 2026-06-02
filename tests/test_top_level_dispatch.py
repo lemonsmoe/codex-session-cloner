@@ -1,4 +1,4 @@
-"""Top-level ``aik`` dispatcher smoke tests.
+﻿"""Top-level ``aik`` dispatcher smoke tests.
 
 These exercise the routing contract that ties the unified ``aik`` entry
 point to the per-tool ``main(argv)`` functions. They run as subprocesses
@@ -9,6 +9,7 @@ catch any import-time regression that doesn't surface in unit tests.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 import unittest
@@ -23,7 +24,7 @@ def _module_env() -> dict:
     env = os.environ.copy()
     existing = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = str(SRC_DIR) if not existing else f"{SRC_DIR}{os.pathsep}{existing}"
-    # Force UTF-8 — aik / codex / claude CLIs print Chinese help text, which
+    # Force UTF-8 鈥?aik / codex / claude CLIs print Chinese help text, which
     # crashes with UnicodeEncodeError on CI runners whose locale is C/POSIX.
     env.setdefault("PYTHONUTF8", "1")
     env.setdefault("PYTHONIOENCODING", "utf-8")
@@ -39,6 +40,7 @@ class AikDispatchTests(unittest.TestCase):
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            encoding="utf-8",
             check=True,
         )
         self.assertIn("aik ", result.stdout)
@@ -51,6 +53,7 @@ class AikDispatchTests(unittest.TestCase):
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            encoding="utf-8",
             check=True,
         )
         self.assertIn("codex", result.stdout)
@@ -65,10 +68,26 @@ class AikDispatchTests(unittest.TestCase):
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            encoding="utf-8",
             check=False,
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("unknown tool", result.stdout)
+
+    def test_unknown_top_level_option_exits_nonzero_with_hint(self) -> None:
+        result = subprocess.run(
+            [sys.executable, "-m", "ai_cli_kit", "--bogus"],
+            cwd=ROOT_DIR,
+            env=_module_env(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("unknown option", result.stdout)
+        self.assertIn("Usage:  aik <tool>", result.stdout)
 
     def test_dispatch_to_codex_help_uses_codex_parser(self) -> None:
         result = subprocess.run(
@@ -78,6 +97,7 @@ class AikDispatchTests(unittest.TestCase):
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            encoding="utf-8",
             check=True,
         )
         self.assertIn("usage: codex-session-toolkit", result.stdout)
@@ -91,12 +111,15 @@ class AikDispatchTests(unittest.TestCase):
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            encoding="utf-8",
             check=True,
         )
         self.assertIn("usage: cc-clean", result.stdout)
         self.assertIn("plan", result.stdout)
 
     def test_aik_shell_launcher_runs_help(self) -> None:
+        if shutil.which("sh") is None:
+            self.skipTest("sh is not available on this platform")
         result = subprocess.run(
             ["sh", "./aik", "--help"],
             cwd=ROOT_DIR,
@@ -104,12 +127,15 @@ class AikDispatchTests(unittest.TestCase):
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            encoding="utf-8",
             check=True,
         )
         self.assertIn("AI CLI Kit", result.stdout)
         self.assertIn("Tools:", result.stdout)
 
     def test_cc_clean_launcher_forwards_to_claude(self) -> None:
+        if shutil.which("sh") is None:
+            self.skipTest("sh is not available on this platform")
         result = subprocess.run(
             ["sh", "./cc-clean", "--help"],
             cwd=ROOT_DIR,
@@ -117,6 +143,7 @@ class AikDispatchTests(unittest.TestCase):
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            encoding="utf-8",
             check=True,
         )
         self.assertIn("usage: cc-clean", result.stdout)
@@ -133,11 +160,11 @@ class HubLogoTests(unittest.TestCase):
         lines = _aik_logo_lines(80)
         self.assertGreaterEqual(len(lines), 4, "expected multi-row pixel-art logo")
         # On terminals supporting Unicode, the logo MUST contain block-fill
-        # glyphs (or the ASCII fallback "#") — otherwise we lost the pixel-art
+        # glyphs (or the ASCII fallback "#") 鈥?otherwise we lost the pixel-art
         # banner and regressed to the previous text-only header.
         joined = "".join(lines)
         self.assertTrue(
-            "█" in joined or "#" in joined,
+            "鈻? in joined or "#" in joined,
             f"expected pixel fill character in logo, got {joined[:80]!r}",
         )
 
@@ -196,6 +223,42 @@ class HubLogoTests(unittest.TestCase):
         self.assertEqual(captured.get("env_during"), "1", "AIK_HUB_ACTIVE not set during sub-tool")
         self.assertNotIn("AIK_HUB_ACTIVE", os.environ, "AIK_HUB_ACTIVE leaked after sub-tool exit")
 
+    def test_run_hub_uses_resolved_screen_mode_sequences(self) -> None:
+        if str(SRC_DIR) not in sys.path:
+            sys.path.insert(0, str(SRC_DIR))
+        import io
+
+        from ai_cli_kit import cli as cli_mod
+        from ai_cli_kit.core.tui.screen_mode import ScreenModeDecision
+
+        original_stdout = sys.stdout
+        original_windows_vt_ok = cli_mod._WINDOWS_VT_OK
+        original_resolve_screen_mode = cli_mod.resolve_screen_mode
+        original_read_key = cli_mod.read_key
+
+        buffer = io.StringIO()
+        sys.stdout = buffer
+        cli_mod._WINDOWS_VT_OK = True
+        cli_mod.resolve_screen_mode = lambda: ScreenModeDecision(
+            requested="main",
+            resolved="main",
+            reason="test",
+            enter_sequence="ENTER",
+            exit_sequence="EXIT",
+        )
+        cli_mod.read_key = lambda timeout_ms=None: "ESC"
+        try:
+            rc = cli_mod._run_hub()
+        finally:
+            sys.stdout = original_stdout
+            cli_mod._WINDOWS_VT_OK = original_windows_vt_ok
+            cli_mod.resolve_screen_mode = original_resolve_screen_mode
+            cli_mod.read_key = original_read_key
+
+        self.assertEqual(rc, 0)
+        self.assertTrue(buffer.getvalue().startswith("ENTER"))
+        self.assertTrue(buffer.getvalue().endswith("EXIT"))
+
     def test_hub_cards_are_horizontally_centred(self) -> None:
         """Cards must have non-trivial left padding on a wide terminal.
 
@@ -216,7 +279,7 @@ class HubLogoTests(unittest.TestCase):
         # Force a wide terminal so the centred padding is unambiguous.
         original_term_width = core_terminal.term_width
         core_terminal.term_width = lambda fallback=90: 120
-        # Patch the cli's reference too — it imported the symbol directly.
+        # Patch the cli's reference too 鈥?it imported the symbol directly.
         from ai_cli_kit import cli as cli_mod
         original_cli_term_width = cli_mod.term_width
         cli_mod.term_width = lambda fallback=90: 120
@@ -232,10 +295,10 @@ class HubLogoTests(unittest.TestCase):
             cli_mod.term_width = original_cli_term_width
 
         plain_lines = re.sub(r"\x1b\[[0-9;]*m", "", buf.getvalue()).splitlines()
-        card_top_lines = [ln for ln in plain_lines if "┌" in ln]
+        card_top_lines = [ln for ln in plain_lines if ln.strip().startswith(("+", "\u250c"))]
         self.assertGreaterEqual(len(card_top_lines), 1)
         # The leading whitespace of the card top border must be > 8 cols on a
-        # 120-col terminal — anything less means we regressed to the old
+        # 120-col terminal 鈥?anything less means we regressed to the old
         # "hard-coded 2-space indent" left-alignment.
         for top in card_top_lines:
             indent = len(top) - len(top.lstrip(" "))
@@ -255,7 +318,7 @@ class CodexSubflowCenteringTests(unittest.TestCase):
     """
 
     def test_await_input_prompt_with_ansi_wrapped_newline_is_centred(self) -> None:
-        """Regression: ``style_text("\\n按 Enter ...", Ansi.DIM)`` wraps the
+        """Regression: ``style_text("\\n鎸?Enter ...", Ansi.DIM)`` wraps the
         leading newline INSIDE ANSI codes. A naive ``startswith("\\n")``
         misses it and the padded-then-newlined prompt drops to column 0.
         ``_await_input`` must look through ANSI codes when peeling leading
@@ -294,7 +357,7 @@ class CodexSubflowCenteringTests(unittest.TestCase):
         original_stdout = sys.stdout
         sys.stdout = buf
         try:
-            app._await_input(style_text("\n按 Enter 返回菜单...", Ansi.DIM))
+            app._await_input(style_text("\n鎸?Enter 杩斿洖鑿滃崟...", Ansi.DIM))
         finally:
             sys.stdout = original_stdout
             builtins.input = original_input
@@ -304,7 +367,7 @@ class CodexSubflowCenteringTests(unittest.TestCase):
         indent = len(plain_prompt) - len(plain_prompt.lstrip(" "))
         self.assertGreater(
             indent, 8,
-            f"prompt not centred — got indent={indent}, prompt={plain_prompt!r}",
+            f"prompt not centred 鈥?got indent={indent}, prompt={plain_prompt!r}",
         )
         # The leading \n must be emitted to stdout BEFORE the prompt so it
         # creates the blank-line spacer rather than landing inside the indent.
@@ -313,7 +376,7 @@ class CodexSubflowCenteringTests(unittest.TestCase):
 
     def test_run_centered_block_pads_uniformly(self) -> None:
         """``_run_centered`` must indent all runner-output lines by the SAME
-        amount so tabular columns (validate-bundles, list-sessions, …) stay
+        amount so tabular columns (validate-bundles, list-sessions, 鈥? stay
         aligned. Per-line independent centring would shred them.
         """
         if str(SRC_DIR) not in sys.path:
@@ -354,8 +417,7 @@ class CodexSubflowCenteringTests(unittest.TestCase):
         plain = re.sub(r"\x1b\[[0-9;]*m", "", buf.getvalue())
         content_lines = [ln for ln in plain.split("\n") if ln.strip()]
         self.assertEqual(len(content_lines), 4)
-        # Every non-blank line must share the same leading-space indent —
-        # that's the "block-centred" property that keeps columns aligned.
+        # Every non-blank line must share the same leading-space indent 鈥?        # that's the "block-centred" property that keeps columns aligned.
         indents = {len(ln) - len(ln.lstrip(" ")) for ln in content_lines}
         self.assertEqual(len(indents), 1, f"non-uniform indent: {indents}")
         single_indent = next(iter(indents))
@@ -364,7 +426,7 @@ class CodexSubflowCenteringTests(unittest.TestCase):
     def test_run_centered_handles_crlf_line_endings(self) -> None:
         """Windows or external tools may emit ``\\r\\n``. Splitting on ``\\n``
         alone leaves stray ``\\r`` that ``display_width`` ignores but that
-        the terminal interprets as a carriage return — making the padded
+        the terminal interprets as a carriage return 鈥?making the padded
         line overwrite earlier content. ``splitlines()`` normalises both.
         """
         if str(SRC_DIR) not in sys.path:
@@ -400,7 +462,7 @@ class CodexSubflowCenteringTests(unittest.TestCase):
             codex_app.term_width = original_term_width
 
         captured = buf.getvalue()
-        # Critical: no bare \r should remain mid-stream — splitlines() drops
+        # Critical: no bare \r should remain mid-stream 鈥?splitlines() drops
         # them, then we rejoin with \n only. Stray \r would manifest as a
         # carriage-return that overwrites earlier columns.
         self.assertNotIn("\r", captured, f"stray CR in output: {captured!r}")
@@ -410,6 +472,49 @@ class CodexSubflowCenteringTests(unittest.TestCase):
         self.assertEqual(len(content), 2)
         indents = {len(ln) - len(ln.lstrip(" ")) for ln in content}
         self.assertEqual(len(indents), 1, f"non-uniform indent after CRLF: {indents}")
+
+    def test_codex_tui_uses_resolved_screen_mode_sequences_when_not_in_hub(self) -> None:
+        if str(SRC_DIR) not in sys.path:
+            sys.path.insert(0, str(SRC_DIR))
+        import io
+
+        from ai_cli_kit.codex.tui import app as codex_app
+        from ai_cli_kit.codex.tui.app import ToolkitAppContext, ToolkitTuiApp
+        from ai_cli_kit.core.tui.screen_mode import ScreenModeDecision
+
+        ctx = ToolkitAppContext(
+            target_provider="demo",
+            active_sessions_dir="/tmp/demo-sessions",
+            config_path="/tmp/demo-config.toml",
+        )
+        app = ToolkitTuiApp(
+            ctx,
+            screen_mode=ScreenModeDecision(
+                requested="main",
+                resolved="main",
+                reason="test",
+                enter_sequence="ENTER",
+                exit_sequence="EXIT",
+            ),
+        )
+
+        original_stdout = sys.stdout
+        original_windows_vt_ok = codex_app._WINDOWS_VT_OK
+        original_read_key = codex_app.read_key
+        buffer = io.StringIO()
+        sys.stdout = buffer
+        codex_app._WINDOWS_VT_OK = True
+        codex_app.read_key = lambda timeout_ms=None: "ESC"
+        try:
+            rc = app.run()
+        finally:
+            sys.stdout = original_stdout
+            codex_app._WINDOWS_VT_OK = original_windows_vt_ok
+            codex_app.read_key = original_read_key
+
+        self.assertEqual(rc, 0)
+        self.assertTrue(buffer.getvalue().startswith("ENTER"))
+        self.assertTrue(buffer.getvalue().endswith("EXIT"))
 
     def test_hub_alt_screen_guarded_by_windows_vt(self) -> None:
         """Regression guard: legacy Windows cmd.exe (where _WINDOWS_VT_OK=False)
@@ -421,7 +526,7 @@ class CodexSubflowCenteringTests(unittest.TestCase):
         path = ROOT_DIR / "src" / "ai_cli_kit" / "cli.py"
         text = path.read_text(encoding="utf-8")
         # The alt-screen sequence MUST appear inside an ``if _WINDOWS_VT_OK:``
-        # block — i.e. there must be a guard somewhere in the file.
+        # block 鈥?i.e. there must be a guard somewhere in the file.
         self.assertIn("_WINDOWS_VT_OK", text, "_WINDOWS_VT_OK guard missing from cli.py")
         self.assertIn("if _WINDOWS_VT_OK", text, "no conditional guard around VT sequences")
 
@@ -432,7 +537,7 @@ class CodexSubflowCenteringTests(unittest.TestCase):
 
         Static-scan check: ``_render_home`` and ``_render_section_page`` MUST
         contain a branch that uses ``clear_screen()`` and ``"\\n".join(visible_lines)``
-        — proving the no-VT fallback exists.
+        鈥?proving the no-VT fallback exists.
         """
         path = ROOT_DIR / "src" / "ai_cli_kit" / "codex" / "tui" / "app.py"
         text = path.read_text(encoding="utf-8")
@@ -442,13 +547,13 @@ class CodexSubflowCenteringTests(unittest.TestCase):
             text.count("if _WINDOWS_VT_OK:"),
             2,
             "frame renderers (_render_home / _render_section_page) missing "
-            "the if _WINDOWS_VT_OK: branch — legacy cmd.exe will see VT escape garbage",
+            "the if _WINDOWS_VT_OK: branch 鈥?legacy cmd.exe will see VT escape garbage",
         )
 
     def test_replace_with_retry_wraps_paths_with_long_path(self) -> None:
         """``replace_with_retry`` MUST pre-wrap both src and dst with
         ``long_path()`` before calling ``os.replace``. Without this, a tmp /
-        target path that exceeds Windows MAX_PATH (260 chars — common on
+        target path that exceeds Windows MAX_PATH (260 chars 鈥?common on
         OneDrive-mirrored ``%USERPROFILE%`` trees) silently fails.
         """
         path = ROOT_DIR / "src" / "ai_cli_kit" / "core" / "support.py"
@@ -462,18 +567,18 @@ class CodexSubflowCenteringTests(unittest.TestCase):
         body = m.group(0)
         self.assertIn(
             "long_path(src)", body,
-            "replace_with_retry doesn't wrap src with long_path — Windows MAX_PATH unsafe",
+            "replace_with_retry doesn't wrap src with long_path 鈥?Windows MAX_PATH unsafe",
         )
         self.assertIn(
             "long_path(dst)", body,
-            "replace_with_retry doesn't wrap dst with long_path — Windows MAX_PATH unsafe",
+            "replace_with_retry doesn't wrap dst with long_path 鈥?Windows MAX_PATH unsafe",
         )
 
     def test_codex_cursor_toggles_guarded_by_windows_vt(self) -> None:
         """Regression guard: every ``\\033[?25l`` / ``\\033[?25h`` write in
         ``codex/tui/app.py`` MUST be inside an ``if _WINDOWS_VT_OK:`` block.
 
-        Legacy Windows cmd.exe can't interpret VT escapes — the literal
+        Legacy Windows cmd.exe can't interpret VT escapes 鈥?the literal
         ``\\033[?25h`` would print as garbage glued to the prompt or above
         modal headers, ruining the TUI. The console there always shows the
         cursor anyway, so dropping the toggle is a clean functional no-op
@@ -481,7 +586,7 @@ class CodexSubflowCenteringTests(unittest.TestCase):
 
         The frame-redraw paths (``_render_home``/``_render_section_page``)
         embed cursor codes into a ``hide_cursor + home_cursor + body``
-        string written in one call — those are excluded from this scan
+        string written in one call 鈥?those are excluded from this scan
         because the entire frame is meaningless on a non-VT console
         anyway and the code uses string-concat assignment rather than
         bare ``sys.stdout.write("\\033[?25l")``.
@@ -532,7 +637,7 @@ class CodexSubflowCenteringTests(unittest.TestCase):
             for line_no, line in enumerate(text.splitlines(), 1):
                 if "sqlite3.connect" not in line:
                     continue
-                # Allow ``sqlite3.connect(long_path(...))`` — fail anything else.
+                # Allow ``sqlite3.connect(long_path(...))`` 鈥?fail anything else.
                 self.assertTrue(
                     re.search(r"sqlite3\.connect\(\s*long_path\(", line),
                     f"{path.name}:{line_no} sqlite3.connect must wrap path "
@@ -555,5 +660,6 @@ class CodexSubflowCenteringTests(unittest.TestCase):
         self.assertEqual(
             bad, [],
             f"Found {len(bad)} bare 'for line in render_box(...): print(line)' "
-            "pattern(s) — use self._print_centered_box(render_box(...)) instead."
+            "pattern(s) 鈥?use self._print_centered_box(render_box(...)) instead."
         )
+

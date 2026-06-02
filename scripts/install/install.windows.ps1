@@ -75,6 +75,30 @@ function Assert-LastExitCode {
     }
 }
 
+function Assert-SafeForceTarget {
+    param(
+        [string] $TargetDir,
+        [string] $ProjectRoot
+    )
+
+    $resolvedTarget = [System.IO.Path]::GetFullPath($TargetDir).TrimEnd('\', '/')
+    $resolvedProjectRoot = [System.IO.Path]::GetFullPath($ProjectRoot).TrimEnd('\', '/')
+    $targetRoot = [System.IO.Path]::GetPathRoot($resolvedTarget).TrimEnd('\', '/')
+    $comparison = [System.StringComparison]::OrdinalIgnoreCase
+
+    if ([string]::IsNullOrWhiteSpace($resolvedTarget) -or [string]::Equals($resolvedTarget, $targetRoot, $comparison)) {
+        throw "Refusing to delete unsafe VENV_DIR: $TargetDir"
+    }
+    $cursor = [System.IO.DirectoryInfo]::new($resolvedProjectRoot)
+    while ($cursor -ne $null) {
+        $candidate = $cursor.FullName.TrimEnd('\', '/')
+        if ([string]::Equals($resolvedTarget, $candidate, $comparison)) {
+            throw "Refusing to delete project root or ancestor as VENV_DIR: $resolvedTarget"
+        }
+        $cursor = $cursor.Parent
+    }
+}
+
 if ($Help) {
     Show-Usage
     exit 0
@@ -88,6 +112,7 @@ if (-not $pyCmd) {
 }
 
 if ($Force -and (Test-Path $venvDir)) {
+    Assert-SafeForceTarget -TargetDir $venvDir -ProjectRoot $projectRoot
     Remove-Item -Recurse -Force $venvDir
 }
 

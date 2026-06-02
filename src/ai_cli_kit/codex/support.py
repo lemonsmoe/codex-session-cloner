@@ -15,6 +15,8 @@ from __future__ import annotations
 import os
 import platform
 import re
+import unicodedata
+from hashlib import sha1
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -87,14 +89,28 @@ def export_batch_slug() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-%f")
 
 
+def backup_operation_slug(operation: str) -> str:
+    """Return a timestamped backup dir slug for repair/cleanup operations."""
+    prefix = re.sub(r"\s+", "-", (operation or "").strip()).strip("-") or "backup"
+    return f"{prefix}-{export_batch_slug()}"
+
+
 # ---------------------------------------------------------------------------
 # Codex-specific machine identity + bundle root helpers
 # ---------------------------------------------------------------------------
 
 
 def machine_label_to_key(label: str) -> str:
-    normalized = re.sub(r"[^A-Za-z0-9._-]+", "-", (label or "").strip()).strip("-._")
-    return normalized or "unknown-machine"
+    raw = unicodedata.normalize("NFKC", (label or "").strip())
+    if not raw:
+        return "unknown-machine"
+    normalized = re.sub(r"\s+", "-", raw)
+    normalized = re.sub(r"[^\w.-]+", "-", normalized, flags=re.UNICODE)
+    normalized = re.sub(r"-{2,}", "-", normalized).strip("-._")
+    if normalized:
+        return normalized
+    digest = sha1(raw.encode("utf-8")).hexdigest()[:12]
+    return f"unknown-machine-{digest}"
 
 
 def detect_machine_label() -> str:
@@ -184,6 +200,7 @@ __all__ = [
     # Codex-specific helpers (this module)
     "_long_path",
     "backup_file",
+    "backup_operation_slug",
     "build_batch_export_root",
     "build_machine_bundle_root",
     "build_single_export_root",

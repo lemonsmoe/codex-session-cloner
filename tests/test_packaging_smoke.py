@@ -1,6 +1,8 @@
-import os
+﻿import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -27,7 +29,7 @@ def _module_env() -> dict:
     env = os.environ.copy()
     existing = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = str(SRC_DIR) if not existing else f"{SRC_DIR}{os.pathsep}{existing}"
-    # Force UTF-8 — codex / claude / aik CLIs print Chinese help text, which
+    # Force UTF-8 鈥?codex / claude / aik CLIs print Chinese help text, which
     # crashes with UnicodeEncodeError on CI runners whose locale is C/POSIX.
     env.setdefault("PYTHONUTF8", "1")
     env.setdefault("PYTHONIOENCODING", "utf-8")
@@ -74,6 +76,8 @@ class PackagingSmokeTests(unittest.TestCase):
                 "clone",
                 "clone_dry",
                 "clean",
+                "clean_archived",
+                "clean_archived_dry",
                 "clean_dry",
                 "dedupe",
                 "dedupe_dry",
@@ -89,7 +93,7 @@ class PackagingSmokeTests(unittest.TestCase):
             },
         )
 
-    def test_tui_repair_hotkeys_put_switch_dry_run_second(self) -> None:
+    def test_tui_repair_hotkeys_follow_switch_repair_dedupe_order(self) -> None:
         repair_actions = [
             action
             for action in build_tui_menu_actions()
@@ -101,26 +105,25 @@ class PackagingSmokeTests(unittest.TestCase):
         self.assertEqual(by_id["switch_provider"].cli_args, ("switch-provider",))
         self.assertFalse(by_id["switch_provider"].is_dry_run)
 
-        self.assertEqual(by_id["switch_provider_dry"].hotkey, "2")
-        self.assertEqual(by_id["switch_provider_dry"].cli_args, ("switch-provider", "--dry-run"))
-        self.assertTrue(by_id["switch_provider_dry"].is_dry_run)
-
         expected_numeric_order = [
             ("switch_provider", "1"),
-            ("switch_provider_dry", "2"),
-            ("restore_backup", "3"),
-            ("repair_desktop", "4"),
-            ("repair_desktop_dry", "5"),
-            ("dedupe", "6"),
-            ("dedupe_dry", "7"),
-            ("promote_session", "8"),
-            ("repair_session_history", "9"),
-            ("clone", "a"),
+            ("restore_backup", "2"),
+            ("repair_desktop", "3"),
+            ("repair_desktop_dry", "4"),
+            ("dedupe", "5"),
+            ("dedupe_dry", "6"),
+            ("promote_session", "7"),
+            ("repair_session_history", "8"),
+            ("clone", "9"),
+            ("clone_dry", "r"),
         ]
         self.assertEqual(
             [(action.action_id, action.hotkey) for action in repair_actions[:10]],
             expected_numeric_order,
         )
+        self.assertEqual(by_id["switch_provider_dry"].hotkey, "s")
+        self.assertEqual(by_id["switch_provider_dry"].cli_args, ("switch-provider", "--dry-run"))
+        self.assertTrue(by_id["switch_provider_dry"].is_dry_run)
         self.assertEqual(by_id["clone_dry"].hotkey, "r")
 
     def test_tui_promote_session_command_prompts_for_provider(self) -> None:
@@ -132,8 +135,8 @@ class PackagingSmokeTests(unittest.TestCase):
         app = ToolkitTuiApp(context)
         action = TuiMenuAction(
             "promote_session",
-            "8",
-            "修复指定对话可见性",
+            "7",
+            "Repair one session visibility",
             "repair",
             ("promote-session", "<session_id>"),
         )
@@ -154,8 +157,8 @@ class PackagingSmokeTests(unittest.TestCase):
         app = ToolkitTuiApp(context)
         action = TuiMenuAction(
             "repair_session_history",
-            "9",
-            "修复指定对话历史",
+            "8",
+            "Repair one session history",
             "repair",
             ("repair-session-history", "<session_id>"),
         )
@@ -180,6 +183,7 @@ class PackagingSmokeTests(unittest.TestCase):
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            encoding="utf-8",
             check=True,
         )
         self.assertIn(f"usage: {APP_COMMAND}", result.stdout)
@@ -193,11 +197,14 @@ class PackagingSmokeTests(unittest.TestCase):
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            encoding="utf-8",
             check=True,
         )
         self.assertEqual(result.stdout.strip(), f"{APP_COMMAND} {__version__}")
 
     def test_repo_local_launcher_help_runs(self) -> None:
+        if shutil.which("sh") is None:
+            self.skipTest("sh is not available on this platform")
         result = subprocess.run(
             ["sh", "./codex-session-toolkit", "--help"],
             cwd=ROOT_DIR,
@@ -205,12 +212,15 @@ class PackagingSmokeTests(unittest.TestCase):
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            encoding="utf-8",
             check=True,
         )
         self.assertIn(f"usage: {APP_COMMAND}", result.stdout)
         self.assertIn("--version", result.stdout)
 
     def test_repo_local_launcher_prefers_source_mode_in_git_worktree(self) -> None:
+        if shutil.which("sh") is None:
+            self.skipTest("sh is not available on this platform")
         result = subprocess.run(
             ["sh", "./codex-session-toolkit", "--help"],
             cwd=ROOT_DIR,
@@ -218,11 +228,14 @@ class PackagingSmokeTests(unittest.TestCase):
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            encoding="utf-8",
             check=True,
         )
         self.assertIn("Launcher (Source Mode)", result.stdout)
 
     def test_unix_install_script_help_runs(self) -> None:
+        if shutil.which("sh") is None:
+            self.skipTest("sh is not available on this platform")
         result = subprocess.run(
             ["sh", "./install.sh", "--help"],
             cwd=ROOT_DIR,
@@ -230,12 +243,68 @@ class PackagingSmokeTests(unittest.TestCase):
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            encoding="utf-8",
             check=True,
         )
         self.assertIn("Usage: ./install.sh", result.stdout)
         self.assertIn("--editable", result.stdout)
 
+    def test_unix_install_force_refuses_to_delete_project_root(self) -> None:
+        if shutil.which("sh") is None:
+            self.skipTest("sh is not available on this platform")
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            fake_root = Path(tmp_dir) / "project"
+            (fake_root / "scripts" / "install").mkdir(parents=True)
+            shutil.copy2(ROOT_DIR / "install.sh", fake_root / "install.sh")
+            shutil.copy2(
+                ROOT_DIR / "scripts" / "install" / "install.unix.sh",
+                fake_root / "scripts" / "install" / "install.unix.sh",
+            )
+
+            result = subprocess.run(
+                ["sh", "./install.sh", "--force", "--python", sys.executable],
+                cwd=fake_root,
+                env={**_module_env(), "VENV_DIR": str(fake_root)},
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            encoding="utf-8",
+                check=False,
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("refusing to delete project root", result.stdout)
+            self.assertTrue((fake_root / "install.sh").exists())
+
+    def test_unix_install_force_refuses_to_delete_project_ancestor(self) -> None:
+        if shutil.which("sh") is None:
+            self.skipTest("sh is not available on this platform")
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            parent_root = Path(tmp_dir) / "workspace"
+            fake_root = parent_root / "project"
+            (fake_root / "scripts" / "install").mkdir(parents=True)
+            shutil.copy2(ROOT_DIR / "install.sh", fake_root / "install.sh")
+            shutil.copy2(
+                ROOT_DIR / "scripts" / "install" / "install.unix.sh",
+                fake_root / "scripts" / "install" / "install.unix.sh",
+            )
+
+            result = subprocess.run(
+                ["sh", "./install.sh", "--force", "--python", sys.executable],
+                cwd=fake_root,
+                env={**_module_env(), "VENV_DIR": str(parent_root)},
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            encoding="utf-8",
+                check=False,
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("project root or ancestor", result.stdout)
+            self.assertTrue((fake_root / "install.sh").exists())
+
     def test_release_script_help_runs(self) -> None:
+        if shutil.which("sh") is None:
+            self.skipTest("sh is not available on this platform")
         result = subprocess.run(
             ["sh", "./release.sh", "--help"],
             cwd=ROOT_DIR,
@@ -243,11 +312,29 @@ class PackagingSmokeTests(unittest.TestCase):
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            encoding="utf-8",
             check=True,
         )
         self.assertIn("Usage: ./release.sh", result.stdout)
         self.assertIn("--output-dir", result.stdout)
 
+    def test_release_script_rejects_unsafe_version_label(self) -> None:
+        if shutil.which("sh") is None:
+            self.skipTest("sh is not available on this platform")
+        result = subprocess.run(
+            ["sh", "./release.sh", "--version", "../oops"],
+            cwd=ROOT_DIR,
+            env=_module_env(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("unsafe characters", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()
+

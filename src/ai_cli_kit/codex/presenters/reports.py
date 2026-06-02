@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 
 from ..models import (
+    ArchivedCleanupResult,
     BatchExportResult,
     BatchImportResult,
     BundleSummary,
@@ -15,10 +16,10 @@ from ..models import (
     ExportResult,
     ImportResult,
     PromoteSessionResult,
-    SessionHistoryRepairResult,
     RepairResult,
     RestoreBackupResult,
     SessionSummary,
+    SessionHistoryRepairResult,
     SwitchResult,
     ValidationReport,
 )
@@ -89,10 +90,6 @@ def print_clone_run_result(result: CloneRunResult) -> int:
     print("\n==============================")
     print("Summary:")
     print(f"  Target Provider: {result.provider}")
-    if "lineages" in result.stats:
-        print(f"  Lineages Found:  {result.stats.get('lineages', 0)}")
-    if "candidates" in result.stats:
-        print(f"  Candidates:      {result.stats.get('candidates', 0)}")
     print(f"  Cloned (New):    {result.stats.get('cloned', 0)}")
     print(f"  Skipped (Target):{result.stats.get('skipped_target', 0)} (already on target provider)")
     print(f"  Skipped (Done):  {result.stats.get('skipped_exists', 0)} (already cloned earlier)")
@@ -125,12 +122,12 @@ def print_dedupe_result(result: DedupeResult) -> int:
     print(f"Target Provider: {result.provider}")
     print(f"Dry run: {'yes' if result.dry_run else 'no'}")
     print(f"Files scanned: {result.files_checked}")
-    print(f"Duplicate lineage sessions found: {len(result.duplicate_pairs)}")
+    print(f"Duplicate pairs found: {len(result.duplicate_pairs)}")
 
     for delete_path, keep_path, reason in result.duplicate_pairs[:30]:
         action_prefix = "[DRY-RUN] Would delete" if result.dry_run else "[Deleted]"
         print(f"{action_prefix} {delete_path}")
-        print(f"  keep latest representative: {keep_path}")
+        print(f"  keep: {keep_path}")
         print(f"  reason: {reason}")
 
     if len(result.duplicate_pairs) > 30:
@@ -189,6 +186,45 @@ def print_session_history_repair_result(result: SessionHistoryRepairResult) -> i
     for warning in result.warnings:
         print(warning, file=sys.stderr)
     return 0
+
+
+def print_archived_cleanup_result(result: ArchivedCleanupResult) -> int:
+    print(f"Dry run: {'yes' if result.dry_run else 'no'}")
+    print(f"Archived rollout files found: {len(result.archived_files)}")
+    print(f"Archived thread ids found: {len(result.archived_thread_ids)}")
+    if result.subagent_files:
+        print(f"Subagent rollout files owned by archived threads: {len(result.subagent_files)}")
+
+    for target_path in result.archived_files[:30]:
+        action_prefix = "[DRY-RUN] Would delete" if result.dry_run else "[Deleted]"
+        if result.dry_run or target_path in result.deleted_files:
+            print(f"{action_prefix} {target_path}")
+    for target_path in result.subagent_files[:30]:
+        action_prefix = "[DRY-RUN] Would delete subagent" if result.dry_run else "[Deleted subagent]"
+        if result.dry_run or target_path in result.deleted_files:
+            print(f"{action_prefix} {target_path}")
+
+    if len(result.archived_files) > 30:
+        print(f"... and {len(result.archived_files) - 30} more")
+    if len(result.subagent_files) > 30:
+        print(f"... and {len(result.subagent_files) - 30} more subagent files")
+
+    if result.deleted_session_ids:
+        print(f"Deleted session ids: {len(result.deleted_session_ids)}")
+    if result.deleted_lock_files:
+        print(f"Deleted lock files: {len(result.deleted_lock_files)}")
+    if result.threads_deleted:
+        print(f"SQLite metadata rows deleted: {result.threads_deleted}")
+    print(f"Global state pruned: {'yes' if result.global_state_pruned else 'no'}")
+    if result.warnings:
+        print("Warnings:", file=sys.stderr)
+        for warning in result.warnings:
+            print(warning, file=sys.stderr)
+    if result.errors:
+        print("Errors:", file=sys.stderr)
+        for path, reason in result.errors:
+            print(f"{path}: {reason}", file=sys.stderr)
+    return 1 if result.errors else 0
 
 
 def print_export_result(result: ExportResult) -> int:
@@ -282,17 +318,22 @@ def print_repair_result(result: RepairResult) -> int:
     print(f"Target model provider: {result.provider}")
     print(f"Dry run: {'yes' if result.dry_run else 'no'}")
     print(f"Include CLI: {'yes' if result.include_cli else 'no'}")
-    print(f"Retag provider: {'yes' if result.retag_provider else 'no'}")
     print(f"Valid session files scanned: {result.entries_scanned}")
     print(f"Desktop session files retagged: {result.desktop_retagged}")
     print(f"CLI session files converted: {result.cli_converted}")
     print(f"Skipped invalid session files: {len(result.skipped_sessions)}")
+    print(f"Missing workspace directories created: {len(result.created_workspace_dirs)}")
     print(f"Workspace roots active after repair: {result.workspace_roots_count}")
     print(f"Desktop thread rows upserted: {result.threads_updated}")
-    print(f"Desktop-visible thread ids registered: {result.visible_thread_ids_count}")
-    print(f"Thread workspace hints registered: {result.workspace_hints_count}")
     if result.backup_root is not None:
         print(f"Backup directory: {result.backup_root}")
+
+    if result.created_workspace_dirs:
+        print("Created workspace directories:")
+        for path_str in result.created_workspace_dirs[:20]:
+            print(path_str)
+        if len(result.created_workspace_dirs) > 20:
+            print(f"... and {len(result.created_workspace_dirs) - 20} more")
 
     if result.changed_sessions:
         print("Changed session files:")

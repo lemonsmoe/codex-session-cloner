@@ -5,6 +5,7 @@ from __future__ import annotations
 import errno
 import json
 import os
+import re
 import shutil
 import threading
 import time
@@ -1357,12 +1358,56 @@ def target_keys() -> Tuple[str, ...]:
     return TARGET_ORDER
 
 
+_BACKUP_ROOT_NAME_RE = re.compile(
+    r"^(?P<date>\d{8})-(?P<time>\d{6})(?:-(?P<micro>\d{6}))?(?:-(?P<suffix>.+))?$"
+)
+
+
+def _backup_root_name_sort_key(root_name: str) -> Optional[Tuple[str, str]]:
+    match = _BACKUP_ROOT_NAME_RE.match(root_name)
+    if not match:
+        return None
+    stamp = "%s-%s-%s" % (
+        match.group("date"),
+        match.group("time"),
+        match.group("micro") or "000000",
+    )
+    return stamp, (match.group("suffix") or "")
+
+
+def _backup_root_created_at_sort_key(meta: Optional[Dict[str, object]]) -> Optional[str]:
+    if not isinstance(meta, dict):
+        return None
+    raw_created_at = meta.get("created_at")
+    if not isinstance(raw_created_at, str) or not raw_created_at.strip():
+        return None
+    try:
+        created_at = datetime.fromisoformat(raw_created_at)
+    except ValueError:
+        return None
+    return created_at.strftime("%Y%m%d-%H%M%S-%f")
+
+
+def _backup_root_sort_key(root: Path) -> Optional[Tuple[int, str, str, str]]:
+    name_key = _backup_root_name_sort_key(root.name)
+    if name_key is not None:
+        return (1, name_key[0], name_key[1], root.name)
+    meta_key = _backup_root_created_at_sort_key(_read_backup_metadata(root))
+    if meta_key is not None:
+        return (1, meta_key, "", root.name)
+    try:
+        return (0, f"{root.stat().st_mtime_ns:020d}", "", root.name)
+    except OSError:
+        return None
+
+
 def list_backup_roots(paths: ClaudePaths) -> Tuple[Path, ...]:
     """Return backup roots under ``backup_root_base`` newest-first.
 
     Used by both ``aik claude restore`` (lets the user pick a snapshot to
-    revert to) and the retention pruner. Sort by mtime so a system clock
-    skew doesn't reorder the user's mental "newest" timestamp.
+    revert to) and the retention pruner. Prefer stable creation identity
+    encoded in the backup root name or metadata; only fall back to mutable
+    directory mtime when older/manual roots provide no better signal.
 
     Note on interface asymmetry: this function returns a plain tuple
     while ``prune_backup_roots`` returns a ``PruneOutcome`` dataclass.
@@ -1375,17 +1420,14 @@ def list_backup_roots(paths: ClaudePaths) -> Tuple[Path, ...]:
     if not base.exists() or not base.is_dir():
         return ()
     roots = [child for child in base.iterdir() if child.is_dir()]
-    # M2 fix: stat may race with concurrent prune. Drop entries that
-    # vanish between is_dir() and stat() rather than letting the
-    # OSError escape.
-    def _safe_mtime(p: Path) -> float:
-        try:
-            return p.stat().st_mtime
-        except OSError:
-            return -1.0  # treat missing as oldest
-    roots = [r for r in roots if _safe_mtime(r) >= 0]
-    roots.sort(key=_safe_mtime, reverse=True)
-    return tuple(roots)
+    keyed_roots = [
+        (root, sort_key)
+        for root in roots
+        for sort_key in (_backup_root_sort_key(root),)
+        if sort_key is not None
+    ]
+    keyed_roots.sort(key=lambda item: item[1], reverse=True)
+    return tuple(root for root, _ in keyed_roots)
 
 
 def restore_from_backup(
@@ -3286,17 +3328,14 @@ def _path_size(path: Path) -> int:
         top_mtime_ns = path.stat().st_mtime_ns
     except OSError:
         top_mtime_ns = 0
-    # R8 pass-1 M4 perf: try a cheap lookup keyed only on top mtime
-    # FIRST. Computing ``_child_mtime_signature`` walks every immediate
-    # child stat and is the dominant cost for large ``projects_dir``.
-    # If any cache key with the same (path, top_mtime, *) hits we can
-    # skip the child walk entirely.
-    with _PATH_SIZE_CACHE_LOCK:
-        for k, v in reversed(_PATH_SIZE_CACHE.items()):
-            if k[0] == str(path) and k[1] == top_mtime_ns:
-                _PATH_SIZE_CACHE.move_to_end(k)
-                return v
-    # Top mtime miss → child churn possible; compute the full signature.
+    # The cache MUST key on both top_mtime AND child_sig: a deep write
+    # (e.g. cc rolling out ``projects/<cwd>/<file>``) does not bubble
+    # mtime up to ``path`` itself, but it does change child_sig — so a
+    # top_mtime-only fast path would return a stale answer. A previous
+    # "R8 pass-1 M4 perf" shortcut did exactly that and triggered a
+    # flaky 3.10 CI failure when FS timestamp truncation hid the bug
+    # on other Python versions. ``_child_mtime_signature`` is shallow
+    # (immediate children only) so the cost is bounded.
     child_sig = _child_mtime_signature(path)
     cache_key = (str(path), top_mtime_ns, child_sig)
 

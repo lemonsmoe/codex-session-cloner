@@ -30,6 +30,23 @@
 
 </details>
 
+## 30 秒上手
+
+```bash
+git clone https://github.com/goodnightzsj/codex-session-cloner.git
+cd codex-session-cloner
+./install.sh        # macOS / Linux：装好 venv + 注册 aik 命令
+# Windows 用户改双击 install.bat
+aik                 # 进交互界面：↑↓ 选工具、Enter 确认
+```
+
+不想装任何东西？项目目录里直接跑 `./aik` 等效，零污染。**最常见的两个动作**：
+
+- 看本机 Codex 会话：`aik codex list`
+- 安全清理 Claude 本地缓存与遥测（自动备份）：`aik claude clean --preset safe --yes`
+
+下面是完整命令清单和进阶用法。
+
 ## 选哪种运行方式？
 
 | 方式 | 命令 | 需要安装吗？ | 会在 PATH 里多命令吗？ |
@@ -51,6 +68,8 @@ chmod +x install.sh aik cc-clean codex-session-toolkit codex-session-toolkit.com
 ./aik                         # 进入交互菜单
 ```
 
+`./install.sh --force` 现在会拒绝删除项目根目录，以及任何会把当前仓库一起删掉的祖先目录；`VENV_DIR` 只应用来指向单独的虚拟环境目录。
+
 ### 一键安装（Windows）
 
 双击 `install.bat`，再双击 `aik.cmd`。或：
@@ -60,6 +79,8 @@ chmod +x install.sh aik cc-clean codex-session-toolkit codex-session-toolkit.com
 .\install.ps1 -NoScripts      # 极简安装：装包但不注册命令
 .\aik.cmd
 ```
+
+`.\install.ps1 -Force` 同样会拒绝把仓库根目录或其祖先目录当成 `VENV_DIR` 删除。
 
 ### `python -m` 直跑（不想注册任何命令）
 
@@ -88,19 +109,72 @@ python -m ai_cli_kit.claude
 
 ### Codex（会话管理）
 
+按使用场景选命令：
+
+| 我想…                                | 跑 |
+|---|---|
+| 看本机有哪些 Codex 会话              | `aik codex list` |
+| 导出一个会话为 Bundle                | `aik codex export <session_id>` |
+| 批量导出所有 Desktop 会话            | `aik codex export-desktop-all` |
+| 导入别人给的 Bundle                  | `aik codex import <session_id>` |
+| 切换 provider 后继续聊（克隆会话）   | `aik codex clone-provider` |
+| Desktop 列表里某会话不见了           | `aik codex repair-desktop` |
+| 归档对话太多想清理（不可恢复）       | `aik codex clean-archived --dry-run` → 加 `--yes` 执行 |
+
+<details>
+<summary>完整命令清单（含 dry-run / target_provider 等高级开关）</summary>
+
 ```bash
 ./aik codex list                       # 列出本机 Codex 会话
 ./aik codex export <session_id>        # 导出单个会话为 Bundle
 ./aik codex export-desktop-all         # 批量导出 Desktop 会话
 ./aik codex import <session_id>        # 导入 Bundle
 ./aik codex clone-provider             # 切换 provider 后克隆
+./aik codex clean-archived --dry-run   # 预览清理已归档对话
+./aik codex clean-archived --yes       # 清理已归档对话及其 Desktop 元数据
 ./aik codex repair-desktop             # 修复 Desktop 可见性 / 索引
 ./aik codex --help                     # 完整子命令清单
 ```
 
+</details>
+
+#### `clean-archived` 清理范围
+
+`clean-archived` 面向 Codex Desktop 已归档对话，适合在侧边栏归档列表已经不再需要保留时释放本地会话数据。建议先退出 Codex Desktop，再执行 dry-run：
+
+```bash
+./aik codex clean-archived --dry-run
+./aik codex clean-archived --yes
+```
+
+执行时会删除：
+
+- `~/.codex/archived_sessions/` 下的归档 rollout JSONL 与对应 `.lock` 文件
+- `~/.codex/session_index.jsonl` 中这些归档 session id 的索引项
+- 最新 `~/.codex/state_*.sqlite` 中这些归档线程的 Desktop 元数据行（包括 `threads`、`thread_dynamic_tools` 等相关表）
+- `.codex-global-state.json` 中这些线程对应的 workspace hints、prompt-history、heartbeat 权限等残留
+
+注意：`clean-archived` 不创建备份，也没有 restore 子命令；真实删除必须显式传 `--yes`。如果某个 session id 同时仍存在于 `~/.codex/sessions/`，工具只删除归档目录里的残留文件，不清理 active 线程的 index / sqlite / global state 元数据。
+
 兼容写法：把 `./aik codex` 换成 `./codex-session-toolkit` 即可，参数完全一致。
 
 ### CC Clean（Claude 本地清理）
+
+> **一句话**：`safe` 预设清掉登录痕迹/缓存/遥测但**保留** projects 和 sessions；`full` 全清，**会丢对话历史**。所有删除默认自动备份，可以 restore。
+
+按使用场景选命令：
+
+| 我想…                                 | 跑 |
+|---|---|
+| 看安全预设到底要删什么（不动磁盘）    | `aik claude plan` |
+| 安全清理（清登录痕迹，留对话历史）    | `aik claude clean --preset safe --yes` |
+| 完整重置（**含会话数据，慎用**）      | `aik claude clean --preset full --yes` |
+| 从备份还原                            | `aik claude restore <backup-path> --yes` |
+| 删旧备份只留最近 5 份                 | `aik claude prune-backups --keep 5 --yes` |
+| 路径解析诊断                          | `aik claude debug-paths --format json` |
+
+<details>
+<summary>完整命令清单（含 remap-history / list-targets）</summary>
 
 ```bash
 ./aik claude plan                              # 预览默认安全清理计划
@@ -115,6 +189,11 @@ python -m ai_cli_kit.claude
 ```
 
 兼容写法：`./aik claude` 等价于 `./cc-clean`。
+
+</details>
+
+<details>
+<summary>清理覆盖范围（60+ targets 跨 7 类）+ 安全机制 + JSON 模式</summary>
 
 **清理覆盖范围（60+ targets，跨 7 类）**：
 
@@ -143,6 +222,7 @@ scratchpad: ${TMPDIR}/claude (Windows) / ${TMPDIR}/claude-<uid> (POSIX)
 **安全机制**：
 
 - 默认所有删除走 `~/.claude-clean-backups/<时间戳-uuid>/` 备份目录，POSIX 上 0o700 + 内文件 0o600
+- `prune-backups` / `restore` / `remap-history` 认定“最新备份”时优先使用备份目录名里的创建时间（以及 sidecar metadata），不会因为旧备份目录后来被 touch / copy 而错把它排到最新
 - 备份带 `_cc_clean_meta.json` sidecar 记录原始 anchor，确保 restore 能还原到正确位置
 - restore 严格防路径穿越：trusted-anchor whitelist + commonpath 边界 + dst 父链 realpath
 - 跨进程文件锁防并发（execute_plan / restore / prune-backups 三入口）
@@ -150,6 +230,55 @@ scratchpad: ${TMPDIR}/claude (Windows) / ${TMPDIR}/claude-<uid> (POSIX)
 - `--no-backup` 显式关闭备份；`--dry-run` 只预览不动磁盘
 
 **JSON 模式**：所有子命令支持 `--format json` 输出单文档 envelope `{command, status, ...}`，`status` 为 `ok` / `partial` / `error` / `empty`。`--format=json` 模式下未传 `--yes` 且非 `--dry-run` 时拒绝执行（防自动化脚本无意识破坏数据）。
+
+</details>
+
+## 常见问题
+
+<details>
+<summary>装完跑 <code>aik</code> 报 <code>command not found</code></summary>
+
+`install.sh` 把命令注册到了 venv/bin，如果 venv/bin 不在 PATH 里就找不到。两种处理：
+
+```bash
+# 方案 A：把 venv/bin 加进 PATH（持久）
+echo 'export PATH="$HOME/.local/share/aik/venv/bin:$PATH"' >> ~/.bashrc   # zsh 改 ~/.zshrc
+source ~/.bashrc
+
+# 方案 B：项目目录里直接跑 launcher，零依赖
+./aik
+```
+
+</details>
+
+<details>
+<summary>没装 Codex Desktop / Claude Code 还能用吗？</summary>
+
+可以。`aik` 只在你触发对应子工具时才读对方的本地数据：
+
+- 没装 Codex → `aik codex` 子命令会报 `Missing file: ~/.codex/...`，但不影响 CC Clean 部分；
+- 没装 Claude Code → `aik claude` 同理；
+- 顶层菜单 `aik` 始终能进，互不依赖。
+
+</details>
+
+<details>
+<summary>误删了能恢复吗？</summary>
+
+- `aik claude clean` **默认自动备份**到 `~/.claude-clean-backups/<时间戳-uuid>/`，跑 `aik claude restore <backup-path> --yes` 即可还原；
+- `aik codex export/import` 默认不动原文件，导入回去就行；
+- ⚠️ **`aik codex clean-archived --yes` 不创建备份、也没有 restore 子命令**。务必先 `--dry-run` 看清单，确认无误再加 `--yes`。
+
+</details>
+
+<details>
+<summary>Windows 上有什么需要特殊准备的吗？</summary>
+
+- 装 Python 3.10+。
+- 双击 `install.bat` 即可，工具内部已经处理长路径 + Windows 保留文件名 + NTFS junction 守卫。
+- 若 PowerShell 阻止脚本，先在管理员 PowerShell 跑：`Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser`。
+
+</details>
 
 ## 制作发布包
 

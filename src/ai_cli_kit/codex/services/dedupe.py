@@ -6,7 +6,7 @@ import json
 import sqlite3
 from contextlib import closing
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import timezone
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +15,7 @@ from ..paths import CodexPaths
 from ..services.provider import detect_provider
 from ..stores.index import remove_session_index_entries
 from ..stores.session_files import iter_session_files, parse_codex_timestamp, parse_jsonl_records, read_session_payload
-from ..support import atomic_write, backup_file, long_path, prune_old_backups
+from ..support import atomic_write, backup_file, backup_operation_slug, long_path, prune_old_backups
 
 
 @dataclass(frozen=True)
@@ -342,7 +342,7 @@ def dedupe_clones(
 
     backup_parent = paths.code_dir / "repair_backups"
     prune_old_backups(backup_parent, keep_last=20)
-    backup_root = backup_parent / f"dedupe-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
+    backup_root = backup_parent / backup_operation_slug("dedupe")
     backed_up: set[str] = set()
     deleted_session_ids: list[str] = []
     deleted_files: list[Path] = []

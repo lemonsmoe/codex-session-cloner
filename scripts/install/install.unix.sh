@@ -74,9 +74,37 @@ resolve_python() {
   fi
 }
 
+assert_safe_force_target() {
+  target_dir="$1"
+  if ! resolved_target="$(CDPATH= cd -- "$target_dir" && pwd -P)"; then
+    echo "Error: refusing to delete unresolved VENV_DIR: $target_dir" >&2
+    exit 2
+  fi
+  if ! resolved_project_root="$(CDPATH= cd -- "$PROJECT_ROOT" && pwd -P)"; then
+    echo "Error: refusing to evaluate project root: $PROJECT_ROOT" >&2
+    exit 2
+  fi
+  if [ -z "$resolved_target" ] || [ "$resolved_target" = "/" ]; then
+    echo "Error: refusing to delete unsafe VENV_DIR: $target_dir" >&2
+    exit 2
+  fi
+  cursor="$resolved_project_root"
+  while :; do
+    if [ "$resolved_target" = "$cursor" ]; then
+      echo "Error: refusing to delete project root or ancestor as VENV_DIR: $resolved_target" >&2
+      exit 2
+    fi
+    if [ "$cursor" = "/" ]; then
+      break
+    fi
+    cursor="$(dirname -- "$cursor")"
+  done
+}
+
 resolve_python
 
 if [ "$FORCE" -eq 1 ] && [ -d "$VENV_DIR" ]; then
+  assert_safe_force_target "$VENV_DIR"
   rm -rf "$VENV_DIR"
 fi
 
