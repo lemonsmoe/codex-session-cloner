@@ -2,6 +2,8 @@
 
 This document describes the maintenance workflow for this fork. The goal is to keep local provider-switching fixes easy to verify and easy to merge with upstream changes.
 
+新 agent 接手前先阅读 [项目当前状态](context/00_current/index.md)，再按任务选择对应领域文档；多 agent 协作规范见 [项目上下文与协作运行手册](runbooks/context-management.md)。
+
 ## Branch Policy
 
 - Keep `main` close to the GitHub upstream branch.
@@ -113,4 +115,3 @@ Keep repair logic concentrated in a few stable modules:
 - `services/repair.py`, `services/promote.py`, `services/switching.py`: orchestration only.
 
 Avoid copying index/state/thread-writing logic into new commands. Add shared helpers first, then call them from services.
-
